@@ -1,0 +1,22 @@
+2025-08-06 15:10:47,828 INFO    MainThread:97124 [wandb_setup.py:_flush():80] Current SDK version is 0.21.0
+2025-08-06 15:10:47,828 INFO    MainThread:97124 [wandb_setup.py:_flush():80] Configure stats pid to 97124
+2025-08-06 15:10:47,828 INFO    MainThread:97124 [wandb_setup.py:_flush():80] Loading settings from /home/jooeun/.config/wandb/settings
+2025-08-06 15:10:47,828 INFO    MainThread:97124 [wandb_setup.py:_flush():80] Loading settings from /home/jooeun/gaussian-splatting/wandb/settings
+2025-08-06 15:10:47,828 INFO    MainThread:97124 [wandb_setup.py:_flush():80] Loading settings from environment variables
+2025-08-06 15:10:47,828 INFO    MainThread:97124 [wandb_init.py:setup_run_log_directory():703] Logging user logs to /home/jooeun/gaussian-splatting/wandb/offline-run-20250806_151047-en00al4s/logs/debug.log
+2025-08-06 15:10:47,828 INFO    MainThread:97124 [wandb_init.py:setup_run_log_directory():704] Logging internal logs to /home/jooeun/gaussian-splatting/wandb/offline-run-20250806_151047-en00al4s/logs/debug-internal.log
+2025-08-06 15:10:47,828 INFO    MainThread:97124 [wandb_init.py:init():830] calling init triggers
+2025-08-06 15:10:47,828 INFO    MainThread:97124 [wandb_init.py:init():835] wandb.init called with sweep_config: {}
+config: {'data': namespace(source_path='data/MeshRIR', model_path='output/yaml_model'), 'model': namespace(initial_points=10000, aabb=[-10, -10, 0, 10, 10, 5]), 'audio': namespace(fs=16000, seq_len=16000, n_fft=256, hop_length=64, spec_loss_weight=1.0, amplitude_loss_weight=1.0, angle_loss_weight=1.0, time_loss_weight=1.0, energy_loss_weight=0.5, multistft_loss_weight=0.5), 'optimizer': namespace(iterations=30000, position_lr_init=0.00016, position_lr_final=1.6e-06, position_lr_delay_mult=0.01, position_lr_max_steps=30000, opacity_lr=0.05, scaling_lr=0.005, rotation_lr=0.001), 'densification': namespace(densify_from_iter=500, densify_until_iter=15000, densification_interval=100, densify_grad_threshold=0.0002, prune_opacity_threshold=0.005, prune_scale_threshold=0.01, densify_scale_threshold=0.01), 'loss_weights': namespace(spec_loss_weight=1.0, amplitude_loss_weight=1.0, angle_loss_weight=1.0, time_loss_weight=1.0, energy_loss_weight=0.5, multistft_loss_weight=0.5), 'logging': namespace(project_name='gaussian-splatting-audio', save_iterations=[7000, 30000], checkpoint_iterations=[], start_checkpoint=None), '_wandb': {}}
+2025-08-06 15:10:47,828 INFO    MainThread:97124 [wandb_init.py:init():871] starting backend
+2025-08-06 15:10:48,033 INFO    MainThread:97124 [wandb_init.py:init():874] sending inform_init request
+2025-08-06 15:10:48,038 INFO    MainThread:97124 [wandb_init.py:init():882] backend started and connected
+2025-08-06 15:10:48,039 INFO    MainThread:97124 [wandb_init.py:init():953] updated telemetry
+2025-08-06 15:10:48,046 INFO    MainThread:97124 [wandb_init.py:init():977] communicating run to backend with 90.0 second timeout
+2025-08-06 15:10:48,169 INFO    MainThread:97124 [wandb_init.py:init():1029] starting run threads in backend
+2025-08-06 15:10:48,260 INFO    MainThread:97124 [wandb_run.py:_console_start():2458] atexit reg
+2025-08-06 15:10:48,260 INFO    MainThread:97124 [wandb_run.py:_redirect():2306] redirect: wrap_raw
+2025-08-06 15:10:48,260 INFO    MainThread:97124 [wandb_run.py:_redirect():2375] Wrapping output streams.
+2025-08-06 15:10:48,260 INFO    MainThread:97124 [wandb_run.py:_redirect():2398] Redirects installed.
+2025-08-06 15:10:48,261 INFO    MainThread:97124 [wandb_init.py:init():1075] run started, returning control to user process
+2025-08-06 15:11:28,221 INFO    MsgRouterThr:97124 [mailbox.py:close():129] [no run ID] Closing mailbox, abandoning 0 handles.

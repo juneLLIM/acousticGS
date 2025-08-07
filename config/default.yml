@@ -1,0 +1,61 @@
+# --- Default Configuration for Audio Gaussian Splatting ---
+
+# Data and Model Paths
+data:
+  source_path: "data/MeshRIR"
+  model_path: "output/yaml_model"
+
+# Model Initialization
+model:
+  initial_points: 10000
+  aabb: [-10, -10, 0, 10, 10, 5]
+
+# Audio Processing Parameters
+audio:
+  fs: 16000
+  seq_len: 16000
+  n_fft: 256
+  hop_length: 64 # Optional, but good to define explicitly
+  spec_loss_weight: 1.0
+  amplitude_loss_weight: 1.0
+  angle_loss_weight: 1.0
+  time_loss_weight: 1.0
+  energy_loss_weight: 0.5
+  multistft_loss_weight: 0.5
+
+# Optimization Parameters
+optimizer:
+  iterations: 30000
+  position_lr_init: 0.00016
+  position_lr_final: 0.0000016
+  position_lr_delay_mult: 0.01
+  position_lr_max_steps: 30000
+  opacity_lr: 0.05
+  scaling_lr: 0.005
+  rotation_lr: 0.001
+
+# Densification Parameters
+densification:
+  densify_from_iter: 500
+  densify_until_iter: 15000
+  densification_interval: 100
+  densify_grad_threshold: 0.0002
+  prune_opacity_threshold: 0.005
+  prune_scale_threshold: 0.01
+  densify_scale_threshold: 0.01
+
+# Loss Function Weights (for criterion.py)
+loss_weights:
+  spec_loss_weight: 1.0
+  amplitude_loss_weight: 1.0
+  angle_loss_weight: 1.0
+  time_loss_weight: 1.0
+  energy_loss_weight: 0.5
+  multistft_loss_weight: 0.5
+
+# Logging and Saving
+logging:
+  project_name: "gaussian-splatting-audio"
+  save_iterations: [7000, 30000]
+  checkpoint_iterations: []
+  start_checkpoint: null
