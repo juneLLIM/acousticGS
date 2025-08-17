@@ -5,12 +5,18 @@ from types import SimpleNamespace
 
 
 def _dict_to_namespace(d):
-    """Recursively converts a dictionary to a SimpleNamespace."""
-    if not isinstance(d, dict):
-        return d
-    for k, v in d.items():
-        d[k] = _dict_to_namespace(v)
-    return SimpleNamespace(**d)
+    if isinstance(d, dict):
+        return SimpleNamespace(**{k: _dict_to_namespace(v) for k, v in d.items()})
+    return d
+
+
+def _recursive_update(d1, d2):
+    """Recursively merges dictionary d2 into dictionary d1."""
+    for k, v in d2.items():
+        if (isinstance(d1.get(k), dict) and isinstance(v, dict)):
+            _recursive_update(d1[k], v)
+        else:
+            d1[k] = v
 
 
 def load_config():
@@ -21,12 +27,20 @@ def load_config():
         help="Path to the configuration YAML file."
     )
     parser.add_argument(
-        "-m", "--model_path", type=str,
-        help="Override the output model path (data.model_path in YAML)."
+        "-d", "--data_path", type=str,
+        help="Override the data source path (path.data in YAML)."
     )
     parser.add_argument(
-        "-s", "--source_path", type=str,
-        help="Override the data source path (data.source_path in YAML)."
+        "-o", "--output_path", type=str,
+        help="Override the output directory path (path.output in YAML)."
+    )
+    parser.add_argument(
+        "-ck", "--checkpoint_path", type=str,
+        help="Override the checkpoint path (path.checkpoint in YAML)."
+    )
+    parser.add_argument(
+        "-w", "--wandb", type=bool,
+        help="Enable or disable W&B logging."
     )
     args = parser.parse_args()
 
@@ -39,20 +53,24 @@ def load_config():
         print(f"Loading user config from: {args.config}")
         with open(args.config, 'r') as f:
             user_config_dict = yaml.safe_load(f)
-        # Simple recursive update
-        for key, value in user_config_dict.items():
-            if key in config_dict and isinstance(value, dict):
-                config_dict[key].update(value)
-            else:
-                config_dict[key] = value
+        _recursive_update(config_dict, user_config_dict)
 
-    # Override with command-line arguments
-    if args.model_path:
-        config_dict['data']['model_path'] = args.model_path
-    if args.source_path:
-        config_dict['data']['source_path'] = args.source_path
+    config = _dict_to_namespace(config_dict)
 
-    config_ns = _dict_to_namespace(config_dict)
+    # Ensure the logging save_iterations list includes the current iteration
+    if config.training.total_iterations not in config.logging.save_iterations:
+        config.logging.save_iterations.append(config.training.total_iterations)
 
-    # Return both the config object and the path to the file that was loaded
-    return config_ns, args.config.resolve()
+    # Override with command-line arguments if they are provided
+    config.path.config = args.config
+    if args.data_path is not None:
+        config.path.data = args.data_path
+    if args.output_path is not None:
+        config.path.output = args.output_path
+    if args.checkpoint_path is not None:
+        config.path.checkpoint = args.checkpoint_path
+    if args.wandb is not None:
+        config.logging.wandb = args.wandb
+
+    # Return the config namespace
+    return config

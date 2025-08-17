@@ -1,38 +1,76 @@
-# --- Default Configuration for Audio Gaussian Splatting ---
+# --- Default Configuration for Acoustic Gaussian Splatting ---
 
 # Data and Model Paths
-data:
-  source_path: "data/MeshRIR"
-  model_path: "output/yaml_model"
+path:
+  data: "data/MeshRIR"  # Path to the dataset
+  dataset_type: "MeshRIR" # Type of dataset
+  output: "output/yaml_model"  # Path to the output directory
+  checkpoint: null  # Path to the checkpoint
+
+# Logging and Saving
+logging:
+  project_name: "acoustic-gaussian-splatting"
+  save_iterations: [7000, 30000]
+  checkpoint_iterations: []
+  short: False
+  wandb: True
 
 # Model Initialization
 model:
-  initial_points: 10000
-  aabb: [-10, -10, 0, 10, 10, 5]
+  sh_degree: 3
+  initial_points: 1
+
+# Rendering Parameters
+rendering:
+  xyz_min: -6
+  xyz_max:  6
+  near: 0
+  far: 4
+  n_samples: 80
+  n_azi: 80
+  n_ele: 40
+  speed: 343.8
+  pathloss: 1.5
 
 # Audio Processing Parameters
 audio:
-  fs: 16000
-  seq_len: 16000
+  fs: 24000
+  seq_len: 2400
   n_fft: 256
-  hop_length: 64 # Optional, but good to define explicitly
-  spec_loss_weight: 1.0
-  amplitude_loss_weight: 1.0
-  angle_loss_weight: 1.0
-  time_loss_weight: 1.0
-  energy_loss_weight: 0.5
-  multistft_loss_weight: 0.5
+  hop_length: 64
+
+# Training Settings
+training:
+  batchsize: 1024
+  lr: 5e-4
+  weight_decay: 0
+  T_max: 500000
+  eta_min: 5e-5
+  total_iterations: 500000
+  save_freq: 20000
+  val_freq: 20000
+
+# Loss Function Weights
+loss_weights:
+  spec_loss_weight: 2
+  amplitude_loss_weight: 4
+  angle_loss_weight: 1
+  time_loss_weight: 50
+  energy_loss_weight: 1
+  multi_stft_loss_weight: 1
 
 # Optimization Parameters
 optimizer:
-  iterations: 30000
+  type: "adam"
   position_lr_init: 0.00016
   position_lr_final: 0.0000016
   position_lr_delay_mult: 0.01
   position_lr_max_steps: 30000
+  magnitude_lr: 0.0025
   opacity_lr: 0.05
   scaling_lr: 0.005
   rotation_lr: 0.001
+  percent_dense: 0.01
 
 # Densification Parameters
 densification:
@@ -43,19 +81,3 @@ densification:
   prune_opacity_threshold: 0.005
   prune_scale_threshold: 0.01
   densify_scale_threshold: 0.01
-
-# Loss Function Weights (for criterion.py)
-loss_weights:
-  spec_loss_weight: 1.0
-  amplitude_loss_weight: 1.0
-  angle_loss_weight: 1.0
-  time_loss_weight: 1.0
-  energy_loss_weight: 0.5
-  multistft_loss_weight: 0.5
-
-# Logging and Saving
-logging:
-  project_name: "gaussian-splatting-audio"
-  save_iterations: [7000, 30000]
-  checkpoint_iterations: []
-  start_checkpoint: null

@@ -8,21 +8,13 @@ import math
 
 
 class WaveDataset(Dataset):  # Renamed from WaveLoader
-    def __init__(self, base_folder, dataset_type='MeshRIR', eval=False, seq_len=2048, fs=16000):
+    def __init__(self, config, eval=False):
         """DataLoader initializations, can load three different sets together
 
         Parameters
         ----------
-        base_folder : string
-            path to dataset
-        dataset_type : str, optional
-            dataset_type, by default 'MeshRIR', can be selected 'RAF', 'Simu'
         eval : bool, optional
             flag to determine training or testing set
-        seq_len : int, optional
-            length of the prediction audio
-        fs : int, optional
-            sampling rate of the audio, by default is 16000
         """
 
         self.wave_chunks = []
@@ -37,16 +29,19 @@ class WaveDataset(Dataset):  # Renamed from WaveLoader
         self.position_min = np.array(
             [float('inf'), float('inf'), float('inf')])
 
-        self.dataset_type = dataset_type
+        self.dataset_type = config.path.dataset_type
         self.eval = eval
 
         # load three different datasets seperately
-        if dataset_type == 'MeshRIR':
-            self.load_mesh_rir(base_folder, eval, seq_len, fs)
-        elif dataset_type == 'RAF':
-            self.load_raf(base_folder, eval, seq_len, fs)
-        elif dataset_type == 'Simu':
-            self.load_simu(base_folder, eval, seq_len, fs)
+        if self.dataset_type == 'MeshRIR':
+            self.load_mesh_rir(config.path.data, eval,
+                               config.audio.seq_len, config.audio.fs)
+        elif self.dataset_type == 'RAF':
+            self.load_raf(config.path.data, eval,
+                          config.audio.seq_len, config.audio.fs)
+        elif self.dataset_type == 'Simu':
+            self.load_simu(config.path.data, eval,
+                           config.audio.seq_len, config.audio.fs)
         else:
             raise ValueError("Unsupported dataset type")
 
