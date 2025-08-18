@@ -51,9 +51,10 @@ class GaussianModel(nn.Module):
         self.active_sh_degree = 0
         self.optimizer_type = config.optimizer.type.lower()
         self.max_sh_degree = config.model.sh_degree
+        self.seq_len = config.audio.seq_len
         self._xyz = torch.empty(0)
-        self._sh_dc = torch.empty(0)
-        self._sh_rest = torch.empty(0)
+        self._features_dc = torch.empty(0)
+        self._features_rest = torch.empty(0)
         self._scaling = torch.empty(0)
         self._rotation = torch.empty(0)
         self._opacity = torch.empty(0)
@@ -67,27 +68,26 @@ class GaussianModel(nn.Module):
 
     def forward(self, network_pts, network_view, network_tx):
 
-        # Batchify the rendering to avoid memory issues
-        batch_size = 1024 * 16  # Adjust batch size based on available memory
-        all_signals = []
-        all_opacities = []
-        for i in range(0, network_pts.shape[0], batch_size):
-            batch_pts = network_pts[i:i+batch_size]
-            signal_batch, opacity_batch = self.render_signal_at_points(
-                batch_pts)
-            all_signals.append(signal_batch)
-            all_opacities.append(opacity_batch)
+        M = network_pts.shape[0]
+        N = self.get_xyz.shape[0]
+        C = self.seq_len
 
-        signal = torch.cat(all_signals, dim=0)
-        opacity = torch.cat(all_opacities, dim=0)
-        return opacity, signal
+        # Batchify the rendering to avoid memory issues
+        final_opacity = torch.empty(M, device=network_pts.device)
+        final_signal = torch.empty(M, C, device=network_pts.device)
+        for i, point in enumerate(network_pts):
+            signal, opacity = self.render_signal_at_points(point.unsqueeze(0))
+            final_opacity[i] = opacity
+            final_signal[i] = signal
+
+        return final_opacity, final_signal
 
     def capture(self):
         return (
             self.active_sh_degree,
             self._xyz,
-            self._sh_dc,
-            self._sh_rest,
+            self._features_dc,
+            self._features_rest,
             self._scaling,
             self._rotation,
             self._opacity,
@@ -101,8 +101,8 @@ class GaussianModel(nn.Module):
     def restore(self, model_args):
         (self.active_sh_degree,
          self._xyz,
-         self._sh_dc,
-         self._sh_rest,
+         self._features_dc,
+         self._features_rest,
          self._scaling,
          self._rotation,
          self._opacity,
@@ -129,18 +129,18 @@ class GaussianModel(nn.Module):
         return self._xyz
 
     @property
-    def get_sh(self):
-        sh_dc = self._sh_dc
-        sh_rest = self._sh_rest
-        return torch.cat((sh_dc, sh_rest), dim=1)
+    def get_features(self):
+        features_dc = self._features_dc
+        features_rest = self._features_rest
+        return torch.cat((features_dc, features_rest), dim=1)
 
     @property
-    def get_sh_dc(self):
-        return self._sh_dc
+    def get_features_dc(self):
+        return self._features_dc
 
     @property
-    def get_sh_rest(self):
-        return self._sh_rest
+    def get_features_rest(self):
+        return self._features_rest
 
     @property
     def get_opacity(self):
@@ -149,18 +149,43 @@ class GaussianModel(nn.Module):
     def get_covariance(self, scaling_modifier=1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
 
-    def get_magnitude(self, query_points):
-        magnitudes = []
-        for query_point in query_points:
-            dir_pp = (self.get_xyz - query_point)  # (N, 3)
-            dir_pp_normalized = dir_pp/dir_pp.norm(dim=1, keepdim=True)
-            magnitude = eval_sh(self.active_sh_degree,
-                                self.get_sh.unsqueeze(1), dir_pp_normalized)
-            magnitude = torch.clamp_min(magnitude, 0.0)  # (N, 1)
+    def eval_features(self, query_points):
+        """
+        Batchified nested loop
+        """
+        # query_points: (M, 3)
+        M = query_points.shape[0]
+        N = self.get_xyz.shape[0]
+        batch_size = self.config.training.batchsize
 
-            magnitudes.append(magnitude)
-        magnitudes = torch.cat(magnitudes, dim=1)  # (N, M)
-        return magnitudes.transpose(0, 1)  # (M, N)
+        # Pre-allocate the final features tensor with shape (M, N, C)
+        all_features = torch.empty(
+            M, N, self.seq_len, device=query_points.device)
+
+        # Pre-fetch gaussian features
+        xyz = self.get_xyz
+        sh = self.get_features.transpose(1, 2)  # (N, D, C)
+
+        for i in range(0, M):
+            for j in range(0, N, batch_size):
+                start = j
+                end = start + batch_size
+
+                # Calculate directions from query_points to xyz
+                dir_pp = query_points[i] - xyz[start:end]   # (B, 3)
+                dir_pp_normalized = dir_pp / \
+                    (torch.norm(dir_pp, dim=-1, keepdim=True) + 1e-8)   # (B, 3)
+
+                # Evaluate spherical harmonics (B, C)
+                features_batch = eval_sh(
+                    self.active_sh_degree,
+                    sh[start:end],  # (B, D, C)
+                    dir_pp_normalized)  # (B, 3)
+
+                # Store results for the batch
+                all_features[i, start:end, :] = features_batch  # (B, C)
+
+        return all_features  # (M, N, C)
 
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
@@ -172,10 +197,11 @@ class GaussianModel(nn.Module):
         xyz = torch.rand(count, 3, device="cuda") * \
             (xyz_max - xyz_min) + xyz_min
 
-        # Initialize SH feature for magnitude (single channel)
+        # Initialize SH feature for signal with seq_len channels
         # DC component is initialized to 1.0, rest are 0.
-        sh = torch.zeros((count, (self.max_sh_degree + 1) ** 2), device="cuda")
-        sh[:, 0] = 1.0
+        features = torch.zeros(
+            (count, self.seq_len, (self.max_sh_degree + 1) ** 2), device="cuda")
+        features[:, :, 0] = 1.0
 
         # Initialize with small scales
         scales = torch.ones((count, 3), device="cuda") * 0.01
@@ -189,10 +215,10 @@ class GaussianModel(nn.Module):
             0.1 * torch.ones((count, 1), dtype=torch.float, device="cuda"))
 
         self._xyz = nn.Parameter(xyz.requires_grad_(True))
-        self._sh_dc = nn.Parameter(
-            sh[:, 0:1].requires_grad_(True))
-        self._sh_rest = nn.Parameter(
-            sh[:, 1:].requires_grad_(True))
+        self._features_dc = nn.Parameter(features[:, :, 0:1].transpose(
+            1, 2).contiguous().requires_grad_(True))
+        self._features_rest = nn.Parameter(
+            features[:, :, 1:].transpose(1, 2).contiguous().requires_grad_(True))
         self._scaling = nn.Parameter(scales.requires_grad_(True))
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
@@ -209,16 +235,16 @@ class GaussianModel(nn.Module):
         l = [
             {'params': [self._xyz], 'lr': self.config.optimizer.position_lr_init *
                 self.spatial_lr_scale, "name": "xyz"},
-            {'params': [self._sh_dc],
-                'lr': self.config.optimizer.magnitude_lr, "name": "sh_dc"},
-            {'params': [self._sh_rest],
-                'lr': self.config.optimizer.magnitude_lr / 20.0, "name": "sh_rest"},
+            {'params': [self._features_dc],
+                'lr': self.config.optimizer.feature_lr, "name": "f_dc"},
+            {'params': [self._features_rest],
+                'lr': self.config.optimizer.feature_lr / 20.0, "name": "f_rest"},
             {'params': [self._opacity],
                 'lr': self.config.optimizer.opacity_lr, "name": "opacity"},
             {'params': [self._scaling],
                 'lr': self.config.optimizer.scaling_lr, "name": "scaling"},
             {'params': [self._rotation],
-                'lr': self.config.optimizer.rotation_lr, "name": "rotation"}
+                'lr': self.config.optimizer.rotation_lr, "name": "rotation"},
         ]
 
         if self.optimizer_type == "default" or self.optimizer_type == "adam":
@@ -244,9 +270,10 @@ class GaussianModel(nn.Module):
 
     def construct_list_of_attributes(self):
         l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
-        l.append('sh_dc')
-        for i in range(self._sh_rest.shape[1]):
-            l.append('sh_rest_{}'.format(i))
+        for i in range(self._features_dc.shape[1]*self._features_dc.shape[2]):
+            l.append('f_dc_{}'.format(i))
+        for i in range(self._features_rest.shape[1]*self._features_rest.shape[2]):
+            l.append('f_rest_{}'.format(i))
         l.append('opacity')
         for i in range(self._scaling.shape[1]):
             l.append('scale_{}'.format(i))
@@ -259,8 +286,10 @@ class GaussianModel(nn.Module):
 
         xyz = self._xyz.detach().cpu().numpy()
         normals = np.zeros_like(xyz)
-        sh_dc = self._sh_dc.detach().cpu().numpy()
-        sh_rest = self._sh_rest.detach().cpu().numpy()
+        f_dc = self._features_dc.detach().transpose(
+            1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+        f_rest = self._features_rest.detach().transpose(
+            1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
         opacities = self._opacity.detach().cpu().numpy()
         scale = self._scaling.detach().cpu().numpy()
         rotation = self._rotation.detach().cpu().numpy()
@@ -270,7 +299,7 @@ class GaussianModel(nn.Module):
 
         elements = np.empty(xyz.shape[0], dtype=dtype_full)
         attributes = np.concatenate(
-            (xyz, normals, sh_dc, sh_rest, opacities, scale, rotation), axis=1)
+            (xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
@@ -290,17 +319,29 @@ class GaussianModel(nn.Module):
                         np.asarray(plydata.elements[0]["z"])),  axis=1)
         opacities = np.asarray(plydata.elements[0]["opacity"])[..., np.newaxis]
 
-        sh_dc = np.asarray(plydata.elements[0]["sh_dc"])
+        # Load DC features based on seq_len
+        dc_f_names = [
+            p.name for p in plydata.elements[0].properties if p.name.startswith("f_dc_")]
+        dc_f_names = sorted(dc_f_names, key=lambda x: int(x.split('_')[-1]))
+        features_dc = np.zeros((xyz.shape[0], self.seq_len, 1))
+        for idx, attr_name in enumerate(dc_f_names):
+            features_dc[:, idx, 0] = np.asarray(
+                plydata.elements[0][attr_name])
 
+        # Load rest features based on seq_len
         extra_f_names = [
-            p.name for p in plydata.elements[0].properties if p.name.startswith("sh_rest_")]
+            p.name for p in plydata.elements[0].properties if p.name.startswith("f_rest_")]
         extra_f_names = sorted(
             extra_f_names, key=lambda x: int(x.split('_')[-1]))
-        assert len(extra_f_names) == (self.max_sh_degree + 1) ** 2 - 1
-        sh_extra = np.zeros((xyz.shape[0], len(extra_f_names)))
+        assert len(extra_f_names) == self.seq_len * \
+            ((self.max_sh_degree + 1) ** 2 - 1)
+        features_extra = np.zeros((xyz.shape[0], len(extra_f_names)))
         for idx, attr_name in enumerate(extra_f_names):
-            sh_extra[:, idx] = np.asarray(
+            features_extra[:, idx] = np.asarray(
                 plydata.elements[0][attr_name])
+        # Reshape (P,F*SH_coeffs) to (P, F, SH_coeffs except DC)
+        features_extra = features_extra.reshape(
+            (features_extra.shape[0], self.seq_len, (self.max_sh_degree + 1) ** 2 - 1))
 
         scale_names = [
             p.name for p in plydata.elements[0].properties if p.name.startswith("scale_")]
@@ -318,10 +359,10 @@ class GaussianModel(nn.Module):
 
         self._xyz = nn.Parameter(torch.tensor(
             xyz, dtype=torch.float, device="cuda").requires_grad_(True))
-        self._sh_dc = nn.Parameter(torch.tensor(
-            sh_dc, dtype=torch.float, device="cuda").requires_grad_(True))
-        self._sh_rest = nn.Parameter(torch.tensor(
-            sh_extra, dtype=torch.float, device="cuda").requires_grad_(True))
+        self._features_dc = nn.Parameter(torch.tensor(
+            features_dc, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
+        self._features_rest = nn.Parameter(torch.tensor(
+            features_extra, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
         self._opacity = nn.Parameter(torch.tensor(
             opacities, dtype=torch.float, device="cuda").requires_grad_(True))
         self._scaling = nn.Parameter(torch.tensor(
@@ -372,8 +413,8 @@ class GaussianModel(nn.Module):
         optimizable_tensors = self._prune_optimizer(valid_points_mask)
 
         self._xyz = optimizable_tensors["xyz"]
-        self._sh_dc = optimizable_tensors["sh_dc"]
-        self._sh_rest = optimizable_tensors["sh_rest"]
+        self._features_dc = optimizable_tensors["f_dc"]
+        self._features_rest = optimizable_tensors["f_rest"]
         self._opacity = optimizable_tensors["opacity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
@@ -405,18 +446,18 @@ class GaussianModel(nn.Module):
                 optimizable_tensors[group["name"]] = group["params"][0]
         return optimizable_tensors
 
-    def densification_postfix(self, new_xyz, new_sh_dc, new_sh_rest, new_opacities, new_scaling, new_rotation, new_tmp_radii):
+    def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_tmp_radii):
         d = {"xyz": new_xyz,
-             "sh_dc": new_sh_dc,
-             "sh_rest": new_sh_rest,
+             "f_dc": new_features_dc,
+             "f_rest": new_features_rest,
              "opacity": new_opacities,
              "scaling": new_scaling,
              "rotation": new_rotation}
 
         optimizable_tensors = self.cat_tensors_to_optimizer(d)
         self._xyz = optimizable_tensors["xyz"]
-        self._sh_dc = optimizable_tensors["sh_dc"]
-        self._sh_rest = optimizable_tensors["sh_rest"]
+        self._features_dc = optimizable_tensors["f_dc"]
+        self._features_rest = optimizable_tensors["f_rest"]
         self._opacity = optimizable_tensors["opacity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
@@ -447,13 +488,13 @@ class GaussianModel(nn.Module):
         new_scaling = self.scaling_inverse_activation(
             self.get_scaling[selected_pts_mask].repeat(N, 1) / (0.8*N))
         new_rotation = self._rotation[selected_pts_mask].repeat(N, 1)
-        new_sh_dc = self._sh_dc[selected_pts_mask].repeat(N, 1)
-        new_sh_rest = self._sh_rest[selected_pts_mask].repeat(
-            N, 1)
+        new_features_dc = self._features_dc[selected_pts_mask].repeat(N, 1, 1)
+        new_features_rest = self._features_rest[selected_pts_mask].repeat(
+            N, 1, 1)
         new_opacity = self._opacity[selected_pts_mask].repeat(N, 1)
         new_tmp_radii = self.tmp_radii[selected_pts_mask].repeat(N)
 
-        self.densification_postfix(new_xyz, new_sh_dc, new_sh_rest,
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest,
                                    new_opacity, new_scaling, new_rotation, new_tmp_radii)
 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(
@@ -468,15 +509,15 @@ class GaussianModel(nn.Module):
                                               torch.max(self.get_scaling, dim=1).values <= self.percent_dense*scene_extent)
 
         new_xyz = self._xyz[selected_pts_mask]
-        new_sh_dc = self._sh_dc[selected_pts_mask]
-        new_sh_rest = self._sh_rest[selected_pts_mask]
+        new_features_dc = self._features_dc[selected_pts_mask]
+        new_features_rest = self._features_rest[selected_pts_mask]
         new_opacities = self._opacity[selected_pts_mask]
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
 
         new_tmp_radii = self.tmp_radii[selected_pts_mask]
 
-        self.densification_postfix(new_xyz, new_sh_dc, new_sh_rest,
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest,
                                    new_opacities, new_scaling, new_rotation, new_tmp_radii)
 
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, radii):
@@ -513,19 +554,19 @@ class GaussianModel(nn.Module):
 
         Returns:
             A tuple of (signals, opacities) at the query points.
-            - signals (torch.Tensor): (M,) tensor of acoustic sh.
+            - signals (torch.Tensor): (M, C) tensor of acoustic signals.
             - opacities (torch.Tensor): (M,) tensor of opacities.
         """
         M = query_points.shape[0]
         N = self.get_xyz.shape[0]
         if N == 0:
-            return torch.zeros(M, device="cuda"), torch.zeros(M, device="cuda")
+            return torch.zeros(M, self.seq_len, device="cuda"), torch.zeros(M, device="cuda")
 
         means = self.get_xyz    # (N, 3)
         scales = self.get_scaling   # (N, 3)
         rotations = self.get_rotation  # (N, 4)
         opacities = self.get_opacity  # (N, 1)
-        magnitude = self.get_magnitude(query_points)  # (M, N)
+        features = self.eval_features(query_points)  # (M, N, C)
 
         # Build covariance matrices and compute inverse
         R = build_rotation(rotations)  # (N, 3, 3)
@@ -539,13 +580,14 @@ class GaussianModel(nn.Module):
         mahalanobis_sq = torch.sum(transformed_diff**2, dim=-1)  # (M, N)
 
         # Calculate contribution of each Gaussian at each query point
-        # Contribution = sh * Opacity * PDF
+        # Contribution = Signal * Opacity * PDF
+        # (M, N, C) = (M, N, C) * (1, N, 1) * (M, N, 1)
         gaussians = torch.exp(-0.5 * mahalanobis_sq)  # (M, N)
-        contribution = magnitude * \
-            opacities.transpose(0, 1) * gaussians  # (M, N)
+        contribution = features * \
+            opacities.unsqueeze(0) * gaussians.unsqueeze(-1)
 
         # Sum contributions from all Gaussians for each query point
-        final_signal = torch.sum(contribution, dim=1)  # (M,)
+        final_signal = torch.sum(contribution, dim=1)  # (M, C)
 
         # Also compute a combined opacity for alpha compositing
         opacity_contribution = opacities.transpose(0, 1) * gaussians  # (M, N)
@@ -557,8 +599,8 @@ class GaussianModel(nn.Module):
         """Resets the parameters of invalid Gaussians."""
         # Replace NaNs with zeros to prevent errors in subsequent operations
         self._xyz[mask] = 0.0
-        self._sh_dc[mask] = 0.0
-        self._sh_rest[mask] = 0.0
+        self._features_dc[mask] = 0.0
+        self._features_rest[mask] = 0.0
         self._scaling[mask] = 0.0
         self._rotation[mask] = 0.0
         self._opacity[mask] = 0.0

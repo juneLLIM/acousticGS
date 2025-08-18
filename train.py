@@ -142,7 +142,7 @@ def training(config):
         pred_freq = renderer(position_rx.cuda(), position_tx.cuda())
 
         # Compute loss
-        loss_dict, gt_time, pred_time = criterion(pred_freq, gt_freq)
+        loss_dict, gt_time, pred_time = criterion(pred_freq, gt_freq.cuda())
         total_loss = loss_dict["total_loss"]
         total_loss.backward()
 
