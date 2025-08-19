@@ -4,14 +4,12 @@
 path:
   data: "data/MeshRIR"  # Path to the dataset
   dataset_type: "MeshRIR" # Type of dataset
-  output: "output/yaml_model"  # Path to the output directory
+  output: "output/default"  # Path to the output directory
   checkpoint: null  # Path to the checkpoint
 
-# Logging and Saving
+# Logging Settings
 logging:
   project_name: "acoustic-gaussian-splatting"
-  save_iterations: [7000, 30000]
-  checkpoint_iterations: []
   short: False
   wandb: True
 
@@ -70,14 +68,14 @@ optimizer:
   opacity_lr: 0.05
   scaling_lr: 0.005
   rotation_lr: 0.001
-  percent_dense: 0.01
 
 # Densification Parameters
 densification:
   densify_from_iter: 500
   densify_until_iter: 15000
-  densification_interval: 100
-  densify_grad_threshold: 0.0002
-  prune_opacity_threshold: 0.005
-  prune_scale_threshold: 0.01
-  densify_scale_threshold: 0.01
+  densification_interval: 1
+  opacity_reset_interval: 3000
+  min_grad: 0.0002
+  min_opacity: 0.005
+  max_scale: 0.01
+  threshold_scale: 0.001

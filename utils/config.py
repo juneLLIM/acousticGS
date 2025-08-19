@@ -57,10 +57,6 @@ def load_config():
 
     config = _dict_to_namespace(config_dict)
 
-    # Ensure the logging save_iterations list includes the current iteration
-    if config.training.total_iterations not in config.logging.save_iterations:
-        config.logging.save_iterations.append(config.training.total_iterations)
-
     # Override with command-line arguments if they are provided
     config.path.config = args.config
     if args.data_path is not None:

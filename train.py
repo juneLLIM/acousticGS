@@ -105,16 +105,12 @@ def training(config):
 
     # Setup training
     first_iter = 0
-    gaussians.training_setup()
     if config.path.checkpoint:
         (model_params, first_iter) = torch.load(
-            config.path.checkpoint)
+            config.path.checkpoint, weights_only=False)
         gaussians.restore(model_params)
     else:
-        gaussians.create_random(
-            count=config.model.initial_points,
-            xyz_min=config.rendering.xyz_min,
-            xyz_max=config.rendering.xyz_max)
+        gaussians.create_random()
 
     # Setup iteration timing
     iter_start = torch.cuda.Event(enable_timing=True)
@@ -152,26 +148,16 @@ def training(config):
 
             # Densification
             if iteration > config.densification.densify_from_iter and iteration < config.densification.densify_until_iter:
-                grads = gaussians._xyz.grad
-                if grads is not None:
-                    gaussians.add_densification_stats(grads)
-                    if iteration % config.densification.densification_interval == 0:
-                        gaussians.densify_and_prune()
 
-                    if iteration % config.densification.opacity_reset_interval == 0 or iteration == config.densification.densify_from_iter:
-                        gaussians.reset_opacity()
+                if iteration % config.densification.densification_interval == 0:
+                    gaussians.densify_and_prune()
 
-            # Reset any Gaussians that have become invalid (NaN)
-            invalid_positions = torch.isnan(gaussians._xyz).any(dim=1)
-            invalid_opacities = torch.isnan(gaussians._opacity).any(dim=1)
-            invalid_scales = torch.isnan(gaussians._scaling).any(dim=1)
-            invalid_rotations = torch.isnan(gaussians._rotation).any(dim=1)
+                if iteration % config.densification.opacity_reset_interval == 0 or iteration == config.densification.densify_from_iter:
+                    gaussians.reset_opacity()
 
-            invalid_gaussians_mask = invalid_positions | invalid_opacities | invalid_scales | invalid_rotations
-            if torch.any(invalid_gaussians_mask):
-                print(
-                    f"\n[ITER {iteration}] Resetting {torch.sum(invalid_gaussians_mask).item()} invalid Gaussians.")
-                gaussians.reset_invalid_gaussians(invalid_gaussians_mask)
+            gaussians.add_densification_stats(
+                update_filter=torch.ones(gaussians.get_xyz.shape[0], dtype=bool))  # tmp -> fix after culling
+            gaussians.reset_invalid_gaussians()
 
             # Clip gradients to prevent explosion
             torch.nn.utils.clip_grad_norm_(
@@ -208,15 +194,11 @@ def training(config):
             #         vis_3d_dir, f"iter_{iteration}.png")
             #     visualize_gaussian_xyt_3d(gaussians, save_vis_path)
 
-            # # Save model
-            # if iteration in config.logging.save_iterations:
-            #     print(f"\n[ITER {iteration}] Saving Gaussians")
-            #     gaussians.save_ply(os.path.join(
-            #         output_dir, "point_cloud", f"iteration_{iteration}", "point_cloud.ply"))
-            # if iteration in config.logging.checkpoint_iterations:
-            #     print(f"\n[ITER {iteration}] Saving Checkpoint")
-            #     torch.save((gaussians.capture(), iteration), os.path.join(
-            #         output_dir, f"chkpnt{iteration}.pth"))
+            # Save model
+            if iteration % config.training.save_freq == 0:
+                print(f"\n[ITER {iteration}] Saving Checkpoint")
+                torch.save((gaussians.capture(), iteration), os.path.join(
+                    output_dir, f"chkpnt{iteration}.pth"))
 
         # Update progress bar
         progress_bar.update(1)
