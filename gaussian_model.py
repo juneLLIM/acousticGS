@@ -10,11 +10,8 @@
 #
 
 import torch
-import numpy as np
 from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
 from torch import nn
-import os
-from utils.system_utils import mkdir_p
 from utils.general_utils import strip_symmetric, build_scaling_rotation
 from utils.sh_utils import eval_sh
 
@@ -493,25 +490,3 @@ class GaussianModel(nn.Module):
         final_opacity = torch.sum(opacity_contribution, dim=1)  # (M,)
 
         return final_signal, final_opacity
-
-    def reset_invalid_gaussians(self):
-        """
-        Resets the parameters of invalid Gaussians.
-        """
-
-        # Reset any Gaussians that have become invalid (NaN)
-        invalid_positions = torch.isnan(self._xyz).any(dim=1)
-        invalid_opacities = torch.isnan(self._opacity).any(dim=1)
-        invalid_scales = torch.isnan(self._scaling).any(dim=1)
-        invalid_rotations = torch.isnan(self._rotation).any(dim=1)
-
-        mask = invalid_positions | invalid_opacities | invalid_scales | invalid_rotations
-        if torch.any(mask):
-            print(f"\nResetting {torch.sum(mask).item()} invalid Gaussians.")
-
-        self._xyz[mask] = 0.0
-        self._features_dc[mask] = 0.0
-        self._features_rest[mask] = 0.0
-        self._scaling[mask] = 0.0
-        self._rotation[mask] = 0.0
-        self._opacity[mask] = 0.0

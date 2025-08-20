@@ -157,19 +157,6 @@ def training(config):
 
             gaussians.add_densification_stats(
                 update_filter=torch.ones(gaussians.get_xyz.shape[0], dtype=bool))  # tmp -> fix after culling
-            gaussians.reset_invalid_gaussians()
-
-            # Clip gradients to prevent explosion
-            torch.nn.utils.clip_grad_norm_(
-                gaussians.optimizer.param_groups[0]['params'], 1.0)
-            torch.nn.utils.clip_grad_norm_(
-                renderer.parameters(), max_norm=1)
-
-            # Check for NaN or Inf in gradients
-            for param in renderer.parameters():
-                if param.grad is not None:
-                    param.grad[torch.isnan(param.grad)] = 0
-                    param.grad[torch.isinf(param.grad)] = 0
 
             # Optimizer step
             gaussians.optimizer.step()
