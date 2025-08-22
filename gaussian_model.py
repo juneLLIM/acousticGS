@@ -59,7 +59,6 @@ class GaussianModel(nn.Module):
         self.denom = torch.empty(0)
         self.optimizer = None
         self.setup_functions()
-        self.setup_optimizer()
 
     def forward(self, network_pts, network_view, network_tx):
 
@@ -102,6 +101,7 @@ class GaussianModel(nn.Module):
          self.xyz_gradient_accum,
          self.denom,
          opt_dict) = model_args
+        self.setup_optimizer()
         self.optimizer.load_state_dict(opt_dict)
 
     @property
@@ -214,6 +214,8 @@ class GaussianModel(nn.Module):
 
         self.xyz_gradient_accum = torch.zeros((count, 1), device="cuda")
         self.denom = torch.zeros((count, 1), device="cuda")
+
+        self.setup_optimizer()
 
         print(f"Created {count} random gaussians.")
 
@@ -429,7 +431,7 @@ class GaussianModel(nn.Module):
         self.densify_and_clone(grads)
         self.densify_and_split(grads)
 
-        prune_mask = (self.get_opacity < min_opacity).squeeze() and (
+        prune_mask = (self.get_opacity < min_opacity).squeeze() & (
             self.get_scaling.max(dim=1).values < max_scale)
 
         self.prune_points(prune_mask)

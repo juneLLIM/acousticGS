@@ -144,6 +144,9 @@ def training(config):
 
         iter_end.record()
 
+        gaussians.add_densification_stats(
+            update_filter=torch.ones(gaussians.get_xyz.shape[0], dtype=bool))  # tmp -> fix after culling
+
         with torch.no_grad():
 
             # Densification
@@ -154,9 +157,6 @@ def training(config):
 
                 if iteration % config.densification.opacity_reset_interval == 0 or iteration == config.densification.densify_from_iter:
                     gaussians.reset_opacity()
-
-            gaussians.add_densification_stats(
-                update_filter=torch.ones(gaussians.get_xyz.shape[0], dtype=bool))  # tmp -> fix after culling
 
             # Optimizer step
             gaussians.optimizer.step()
