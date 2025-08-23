@@ -145,7 +145,7 @@ def training(config):
         iter_end.record()
 
         gaussians.add_densification_stats(
-            update_filter=torch.ones(gaussians.get_xyz.shape[0], dtype=bool))  # tmp -> fix after culling
+            update_filter=torch.ones(gaussians.get_mean.shape[0], dtype=bool))  # tmp -> fix after culling
 
         with torch.no_grad():
 

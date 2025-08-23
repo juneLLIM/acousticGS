@@ -20,8 +20,8 @@ class AVRRender(nn.Module):
         self.speed = config.rendering.speed
         self.fs = config.audio.fs
         self.pathloss = config.rendering.pathloss
-        self.xyz_min = config.rendering.xyz_min
-        self.xyz_max = config.rendering.xyz_max
+        self.coord_min = config.rendering.coord_min
+        self.coord_max = config.rendering.coord_max
 
     def forward(self, rays_o, position_tx, direction_tx=None):
         """Render audio signal for RAF dataset by iterating over rays to save memory.
@@ -62,11 +62,11 @@ class AVRRender(nn.Module):
 
             # normalize the input
             network_pts = normalize_points(ray_pts.reshape(
-                bs, -1, 3), self.xyz_min, self.xyz_max)
+                bs, -1, 3), self.coord_min, self.coord_max)
             # [bs, N_samples, 3]
             network_view = -dir.expand_as(network_pts)
             network_tx = normalize_points(position_tx.unsqueeze(
-                1).expand_as(network_pts), self.xyz_min, self.xyz_max)
+                1).expand_as(network_pts), self.coord_min, self.coord_max)
             if direction_tx is not None:
                 network_dir_tx = direction_tx.unsqueeze(
                     1).expand_as(network_pts)  # [bs, N_samples, 3]
@@ -93,7 +93,7 @@ class AVRRender(nn.Module):
 
             # tx to bounce points delay samples
             tx2pts_idx = torch.linalg.vector_norm(denormalize_points(
-                network_tx - network_pts, self.xyz_min, self.xyz_max), dim=-1).reshape(*attn.shape) * self.fs / self.speed
+                network_tx - network_pts, self.coord_min, self.coord_max), dim=-1).reshape(*attn.shape) * self.fs / self.speed
             delay_samples = torch.clamp(torch.round(
                 tx2pts_idx), min=0, max=n_lenseq - 1).unsqueeze(-1)
             range_tensor = torch.arange(n_lenseq, device=device)  # [N_lenseq]
@@ -131,12 +131,12 @@ class AVRRender(nn.Module):
         return receive_sig
 
 
-def normalize_points(input_pts, xyz_min, xyz_max):
-    return 2*(input_pts - xyz_min) / (xyz_max - xyz_min) - 1
+def normalize_points(input_pts, coord_min, coord_max):
+    return 2*(input_pts - coord_min) / (coord_max - coord_min) - 1
 
 
-def denormalize_points(input_pts, xyz_min, xyz_max):
-    return (input_pts + 1) / 2 * (xyz_max - xyz_min) + xyz_min
+def denormalize_points(input_pts, coord_min, coord_max):
+    return (input_pts + 1) / 2 * (coord_max - coord_min) + coord_min
 
 
 def directions(n_azi, n_ele, random_azi=True):

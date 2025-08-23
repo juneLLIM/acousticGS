@@ -10,7 +10,7 @@
 #
 
 import torch
-from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
+from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation, build_rotation_4d, build_scaling_rotation_4d
 from torch import nn
 from utils.general_utils import strip_symmetric, build_scaling_rotation
 from utils.sh_utils import eval_sh
@@ -25,9 +25,23 @@ class GaussianModel(nn.Module):
 
     def setup_functions(self):
         def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation):
-            L = build_scaling_rotation(scaling_modifier * scaling, rotation)
-            actual_covariance = L @ L.transpose(1, 2)
-            symm = strip_symmetric(actual_covariance)
+
+            if self.gaussian_dim == 3:
+                L = build_scaling_rotation(
+                    scaling_modifier * scaling, rotation)
+                actual_covariance = L @ L.transpose(1, 2)
+                symm = strip_symmetric(actual_covariance)
+
+            else:
+                L = build_scaling_rotation_4d(
+                    scaling_modifier * scaling, rotation)
+                actual_covariance = L @ L.transpose(1, 2)
+                cov_11 = actual_covariance[:, :3, :3]
+                cov_12 = actual_covariance[:, 0:3, 3:4]
+                cov_t = actual_covariance[:, 3:4, 3:4]
+                current_covariance = cov_11 - \
+                    cov_12 @ cov_12.transpose(1, 2) / cov_t
+                symm = strip_symmetric(current_covariance)
             return symm
 
         self.scaling_activation = torch.exp
@@ -47,23 +61,33 @@ class GaussianModel(nn.Module):
         self.active_sh_degree = 0
         self.max_sh_degree = config.model.sh_degree
         self.seq_len = config.audio.seq_len
-        self.spatial_lr_scale = (
-            config.rendering.xyz_max - config.rendering.xyz_min) / 2.0   # radius
-        self._xyz = torch.empty(0)
+        self._mean = torch.empty(0)
         self._features_dc = torch.empty(0)
         self._features_rest = torch.empty(0)
         self._scaling = torch.empty(0)
         self._rotation = torch.empty(0)
         self._opacity = torch.empty(0)
-        self.xyz_gradient_accum = torch.empty(0)
+        self.mean_gradient_accum = torch.empty(0)
         self.denom = torch.empty(0)
         self.optimizer = None
+
+        self.gaussian_dim = config.model.gaussian_dim
+        if self.gaussian_dim == 3:
+            self.t = torch.empty(0)
+            self.spatial_lr_scale = (
+                config.rendering.coord_max - config.rendering.coord_min) * (3**0.5) / 2.0   # radius
+        elif self.gaussian_dim == 4:
+            self.spatial_lr_scale = (
+                (config.rendering.coord_max - config.rendering.coord_min)**2*3+self.seq_len**2)**0.5 / 2.0  # radius
+        else:
+            raise ValueError("Invalid Gaussian dimension")
+
         self.setup_functions()
 
     def forward(self, network_pts, network_view, network_tx):
 
         M = network_pts.shape[0]
-        N = self.get_xyz.shape[0]
+        N = self.get_mean.shape[0]
         C = self.seq_len
 
         # Batchify the rendering to avoid memory issues
@@ -77,30 +101,58 @@ class GaussianModel(nn.Module):
         return final_opacity, final_signal
 
     def capture(self):
-        return (
-            self.active_sh_degree,
-            self._xyz,
-            self._features_dc,
-            self._features_rest,
-            self._scaling,
-            self._rotation,
-            self._opacity,
-            self.xyz_gradient_accum,
-            self.denom,
-            self.optimizer.state_dict(),
-        )
+        if self.gaussian_dim == 3:
+            return (
+                self.active_sh_degree,
+                self._mean,
+                self._features_dc,
+                self._features_rest,
+                self._scaling,
+                self._rotation,
+                self._opacity,
+                self.mean_gradient_accum,
+                self.denom,
+                self.optimizer.state_dict(),
+                self.t
+            )
+        elif self.gaussian_dim == 4:
+            return (
+                self.active_sh_degree,
+                self._mean,
+                self._features_dc,
+                self._features_rest,
+                self._scaling,
+                self._rotation,
+                self._opacity,
+                self.mean_gradient_accum,
+                self.denom,
+                self.optimizer.state_dict(),
+            )
 
     def restore(self, model_args):
-        (self.active_sh_degree,
-         self._xyz,
-         self._features_dc,
-         self._features_rest,
-         self._scaling,
-         self._rotation,
-         self._opacity,
-         self.xyz_gradient_accum,
-         self.denom,
-         opt_dict) = model_args
+        if self.gaussian_dim == 3:
+            (self.active_sh_degree,
+             self._mean,
+             self._features_dc,
+             self._features_rest,
+             self._scaling,
+             self._rotation,
+             self._opacity,
+             self.mean_gradient_accum,
+             self.denom,
+             opt_dict,
+             self.t) = model_args
+        elif self.gaussian_dim == 4:
+            (self.active_sh_degree,
+             self._mean,
+             self._features_dc,
+             self._features_rest,
+             self._scaling,
+             self._rotation,
+             self._opacity,
+             self.mean_gradient_accum,
+             self.denom,
+             opt_dict,) = model_args
         self.setup_optimizer()
         self.optimizer.load_state_dict(opt_dict)
 
@@ -113,8 +165,8 @@ class GaussianModel(nn.Module):
         return self.rotation_activation(self._rotation)
 
     @property
-    def get_xyz(self):
-        return self._xyz
+    def get_mean(self):
+        return self._mean
 
     @property
     def get_features(self):
@@ -143,7 +195,7 @@ class GaussianModel(nn.Module):
         """
         # query_points: (M, 3)
         M = query_points.shape[0]
-        N = self.get_xyz.shape[0]
+        N = self.get_mean.shape[0]
         batch_size = self.config.training.batchsize
 
         # Pre-allocate the final features tensor with shape (M, N, C)
@@ -151,7 +203,7 @@ class GaussianModel(nn.Module):
             M, N, self.seq_len, device=query_points.device)
 
         # Pre-fetch gaussian features
-        xyz = self.get_xyz
+        mean = self.get_mean
         sh = self.get_features.transpose(1, 2)  # (N, D, C)
 
         for i in range(0, M):
@@ -159,8 +211,8 @@ class GaussianModel(nn.Module):
                 start = j
                 end = start + batch_size
 
-                # Calculate directions from query_points to xyz
-                dir_pp = query_points[i] - xyz[start:end]   # (B, 3)
+                # Calculate directions from query_points to mean
+                dir_pp = query_points[i] - mean[start:end]   # (B, 3)
                 dir_pp_normalized = dir_pp / \
                     (torch.norm(dir_pp, dim=-1, keepdim=True) + 1e-8)   # (B, 3)
 
@@ -182,28 +234,43 @@ class GaussianModel(nn.Module):
     def create_random(self):
 
         count = self.config.model.initial_points
-        xyz = torch.rand(count, 3, device="cuda") * \
-            (self.config.rendering.xyz_max - self.config.rendering.xyz_min) + \
-            self.config.rendering.xyz_min
 
-        # Initialize SH feature for signal with seq_len channels
+        if self.gaussian_dim == 3:
+            mean = torch.rand(count, 3, device="cuda") * \
+                (self.config.rendering.coord_max - self.config.rendering.coord_min) + \
+                self.config.rendering.coord_min
+
+            # Initialize with small scales
+            scales = torch.ones((count, 3), device="cuda") * 0.01
+
+            # Initialize as identity quaternions
+            rots = torch.zeros((count, 4), device="cuda")
+            rots[:, 0] = 1
+
+            self.t = torch.randint(self.seq_len, (count, 1), device="cuda")
+        else:
+            mean = torch.rand(count, 4, device="cuda") * \
+                (self.config.rendering.coord_max - self.config.rendering.coord_min) + \
+                self.config.rendering.coord_min
+            # Initialize with small scales
+            scales = torch.ones((count, 4), device="cuda") * 0.01
+
+            # Initialize as identity quaternions
+            rots = torch.zeros((count, 8), device="cuda")
+            rots[:, 0] = 1
+            rots[:, 4] = 1
+
+        # Initialize SH feature for magnitude
         # DC component is initialized to 1.0, rest are 0.
         features = torch.zeros(
-            (count, self.seq_len, (self.max_sh_degree + 1) ** 2), device="cuda")
+            (count, 1, (self.max_sh_degree + 1) ** 2), device="cuda")
         features[:, :, 0] = 1.0
-
-        # Initialize with small scales
-        scales = torch.ones((count, 3), device="cuda") * 0.01
-
-        # Initialize as identity quaternions
-        rots = torch.zeros((count, 4), device="cuda")
-        rots[:, 0] = 1
 
         # Initialize with low opacity
         opacities = self.inverse_opacity_activation(
             0.1 * torch.ones((count, 1), dtype=torch.float, device="cuda"))
 
-        self._xyz = nn.Parameter(xyz.requires_grad_(True))
+        self._mean = nn.Parameter(mean.requires_grad_(True))
         self._features_dc = nn.Parameter(features[:, :, 0:1].transpose(
             1, 2).contiguous().requires_grad_(True))
         self._features_rest = nn.Parameter(
@@ -212,7 +279,7 @@ class GaussianModel(nn.Module):
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
 
-        self.xyz_gradient_accum = torch.zeros((count, 1), device="cuda")
+        self.mean_gradient_accum = torch.zeros((count, 1), device="cuda")
         self.denom = torch.zeros((count, 1), device="cuda")
 
         self.setup_optimizer()
@@ -222,8 +289,8 @@ class GaussianModel(nn.Module):
     def setup_optimizer(self):
 
         l = [
-            {'params': [self._xyz], 'lr': self.config.optimizer.position_lr_init *
-                self.spatial_lr_scale, "name": "xyz"},
+            {'params': [self._mean], 'lr': self.config.optimizer.position_lr_init *
+                self.spatial_lr_scale, "name": "mean"},
             {'params': [self._features_dc],
                 'lr': self.config.optimizer.feature_lr, "name": "f_dc"},
             {'params': [self._features_rest],
@@ -246,31 +313,18 @@ class GaussianModel(nn.Module):
             except:
                 # A special version of the rasterizer is required to enable sparse adam
                 self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
-        self.xyz_scheduler_args = get_expon_lr_func(lr_init=self.config.optimizer.position_lr_init * self.spatial_lr_scale,
-                                                    lr_final=self.config.optimizer.position_lr_final * self.spatial_lr_scale,
-                                                    lr_delay_mult=self.config.optimizer.position_lr_delay_mult,
-                                                    max_steps=self.config.optimizer.position_lr_max_steps)
+        self.mean_scheduler_args = get_expon_lr_func(lr_init=self.config.optimizer.position_lr_init * self.spatial_lr_scale,
+                                                     lr_final=self.config.optimizer.position_lr_final * self.spatial_lr_scale,
+                                                     lr_delay_mult=self.config.optimizer.position_lr_delay_mult,
+                                                     max_steps=self.config.optimizer.position_lr_max_steps)
 
     def update_learning_rate(self, iteration):
         ''' Learning rate scheduling per step '''
         for param_group in self.optimizer.param_groups:
-            if param_group["name"] == "xyz":
-                lr = self.xyz_scheduler_args(iteration)
+            if param_group["name"] == "mean":
+                lr = self.mean_scheduler_args(iteration)
                 param_group['lr'] = lr
                 return lr
-
-    def construct_list_of_attributes(self):
-        l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
-        for i in range(self._features_dc.shape[1]*self._features_dc.shape[2]):
-            l.append('f_dc_{}'.format(i))
-        for i in range(self._features_rest.shape[1]*self._features_rest.shape[2]):
-            l.append('f_rest_{}'.format(i))
-        l.append('opacity')
-        for i in range(self._scaling.shape[1]):
-            l.append('scale_{}'.format(i))
-        for i in range(self._rotation.shape[1]):
-            l.append('rot_{}'.format(i))
-        return l
 
     def reset_opacity(self):
         opacities_new = self.inverse_opacity_activation(
@@ -319,14 +373,14 @@ class GaussianModel(nn.Module):
         valid_points_mask = ~mask
         optimizable_tensors = self._prune_optimizer(valid_points_mask)
 
-        self._xyz = optimizable_tensors["xyz"]
+        self._mean = optimizable_tensors["mean"]
         self._features_dc = optimizable_tensors["f_dc"]
         self._features_rest = optimizable_tensors["f_rest"]
         self._opacity = optimizable_tensors["opacity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
-        self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
+        self.mean_gradient_accum = self.mean_gradient_accum[valid_points_mask]
         self.denom = self.denom[valid_points_mask]
 
     def cat_tensors_to_optimizer(self, tensors_dict):
@@ -351,8 +405,8 @@ class GaussianModel(nn.Module):
                 optimizable_tensors[group["name"]] = group["params"][0]
         return optimizable_tensors
 
-    def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation):
-        d = {"xyz": new_xyz,
+    def densification_postfix(self, new_mean, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation):
+        d = {"mean": new_mean,
              "f_dc": new_features_dc,
              "f_rest": new_features_rest,
              "opacity": new_opacities,
@@ -360,19 +414,19 @@ class GaussianModel(nn.Module):
              "rotation": new_rotation}
 
         optimizable_tensors = self.cat_tensors_to_optimizer(d)
-        self._xyz = optimizable_tensors["xyz"]
+        self._mean = optimizable_tensors["mean"]
         self._features_dc = optimizable_tensors["f_dc"]
         self._features_rest = optimizable_tensors["f_rest"]
         self._opacity = optimizable_tensors["opacity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
-        self.xyz_gradient_accum = torch.zeros(
-            (self.get_xyz.shape[0], 1), device="cuda")
-        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        self.mean_gradient_accum = torch.zeros(
+            (self.get_mean.shape[0], 1), device="cuda")
+        self.denom = torch.zeros((self.get_mean.shape[0], 1), device="cuda")
 
     def densify_and_split(self, grads, N=2):
-        n_init_points = self.get_xyz.shape[0]
+        n_init_points = self.get_mean.shape[0]
         # Extract points that satisfy the gradient condition
         padded_grad = torch.zeros((n_init_points), device="cuda")
         padded_grad[:grads.shape[0]] = grads.squeeze()
@@ -382,12 +436,17 @@ class GaussianModel(nn.Module):
             self.get_scaling, dim=1).values > self.config.densification.threshold_scale)
 
         stds = self.get_scaling[selected_pts_mask].repeat(N, 1)
-        means = torch.zeros((stds.size(0), 3), device="cuda")
+        if self.gaussian_dim == 3:
+            means = torch.zeros((stds.size(0), 3), device="cuda")
+            rots = build_rotation(
+                self._rotation[selected_pts_mask]).repeat(N, 1, 1)
+        else:
+            means = torch.zeros((stds.size(0), 4), device="cuda")
+            rots = build_rotation_4d(
+                self._rotation[selected_pts_mask]).repeat(N, 1, 1)
         samples = torch.normal(mean=means, std=stds)
-        rots = build_rotation(
-            self._rotation[selected_pts_mask]).repeat(N, 1, 1)
-        new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + \
-            self.get_xyz[selected_pts_mask].repeat(N, 1)
+        new_mean = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + \
+            self.get_mean[selected_pts_mask].repeat(N, 1)
         new_scaling = self.scaling_inverse_activation(
             self.get_scaling[selected_pts_mask].repeat(N, 1) / (0.8*N))
         new_rotation = self._rotation[selected_pts_mask].repeat(N, 1)
@@ -396,7 +455,7 @@ class GaussianModel(nn.Module):
             N, 1, 1)
         new_opacity = self._opacity[selected_pts_mask].repeat(N, 1)
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest,
+        self.densification_postfix(new_mean, new_features_dc, new_features_rest,
                                    new_opacity, new_scaling, new_rotation)
 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(
@@ -410,22 +469,22 @@ class GaussianModel(nn.Module):
         selected_pts_mask = torch.logical_and(selected_pts_mask, torch.max(
             self.get_scaling, dim=1).values <= self.config.densification.threshold_scale)
 
-        new_xyz = self._xyz[selected_pts_mask]
+        new_mean = self._mean[selected_pts_mask]
         new_features_dc = self._features_dc[selected_pts_mask]
         new_features_rest = self._features_rest[selected_pts_mask]
         new_opacities = self._opacity[selected_pts_mask]
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest,
-                                   new_opacities, new_scaling, new_rotation)
+        self.densification_postfix(new_mean, new_features_dc, new_features_rest, new_opacities,
+                                   new_scaling, new_rotation)
 
     def densify_and_prune(self):
 
         min_opacity = self.config.densification.min_opacity
         max_scale = self.config.densification.max_scale
 
-        grads = self.xyz_gradient_accum / self.denom
+        grads = self.mean_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
 
         self.densify_and_clone(grads)
@@ -439,8 +498,8 @@ class GaussianModel(nn.Module):
         torch.cuda.empty_cache()
 
     def add_densification_stats(self, update_filter):
-        self.xyz_gradient_accum[update_filter] += torch.norm(
-            self.get_xyz.grad[update_filter], dim=-1, keepdim=True)
+        self.mean_gradient_accum[update_filter] += torch.norm(
+            self.get_mean.grad[update_filter], dim=-1, keepdim=True)
         self.denom[update_filter] += 1
 
     def render_signal_at_points(self, query_points):
@@ -456,7 +515,7 @@ class GaussianModel(nn.Module):
             - opacities (torch.Tensor): (M,) tensor of opacities.
         """
         M = query_points.shape[0]
-        N = self.get_xyz.shape[0]
+        N = self.get_mean.shape[0]
         if N == 0:
             return torch.zeros(M, self.seq_len, device="cuda"), torch.zeros(M, device="cuda")
 

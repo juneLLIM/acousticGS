@@ -15,13 +15,14 @@ logging:
 
 # Model Initialization
 model:
+  gaussian_dim: 4
   sh_degree: 3
   initial_points: 10000
 
 # Rendering Parameters
 rendering:
-  xyz_min: -6
-  xyz_max:  6
+  coord_min: -6
+  coord_max:  6
   near: 0
   far: 4
   n_samples: 6
