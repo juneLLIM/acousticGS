@@ -12,6 +12,7 @@
 import torch
 import sys
 from datetime import datetime
+import pytz
 import numpy as np
 import random
 
@@ -129,8 +130,7 @@ def safe_state(silent):
         def write(self, x):
             if not self.silent:
                 if x.endswith("\n"):
-                    old_f.write(x.replace("\n", " [{}]\n".format(
-                        str(datetime.now().strftime("%d/%m %H:%M:%S")))))
+                    old_f.write(x.replace("\n", f" [{now()}]\n"))
                 else:
                     old_f.write(x)
 
@@ -143,3 +143,7 @@ def safe_state(silent):
     np.random.seed(0)
     torch.manual_seed(0)
     torch.cuda.set_device(torch.device("cuda:0"))
+
+
+def now():
+    return datetime.now(pytz.timezone("Asia/Seoul")).strftime("%m/%d %H:%M:%S")
