@@ -91,7 +91,8 @@ def training(config):
     gaussians = GaussianModel(config)
 
     # Setup data
-    train_dataset = WaveDataset(config, eval=False)
+    train_dataset = WaveDataset(
+        config, eval=False, iteration=config.training.total_iterations)
     test_dataset = WaveDataset(config, eval=True)
     train_loader = DataLoader(
         train_dataset, batch_size=config.training.batchsize, shuffle=True, num_workers=4, pin_memory=True)

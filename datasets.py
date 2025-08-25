@@ -8,7 +8,7 @@ import math
 
 
 class WaveDataset(Dataset):  # Renamed from WaveLoader
-    def __init__(self, config, eval=False):
+    def __init__(self, config, eval=False, iteration=None):
         """DataLoader initializations, can load three different sets together
 
         Parameters
@@ -55,6 +55,9 @@ class WaveDataset(Dataset):  # Renamed from WaveLoader
         if self.rotations_tx:
             self.rotations_tx = torch.tensor(
                 np.array(self.rotations_tx), dtype=torch.float32)
+
+        self.iteration = iteration if iteration else len(self.wave_chunks)
+        self.length = len(self.wave_chunks)
 
     def load_mesh_rir(self, base_folder, eval, seq_len, fs=24000):
         """ Load MeshRIR datasets
@@ -170,9 +173,10 @@ class WaveDataset(Dataset):  # Renamed from WaveLoader
         self.position_min = np.minimum(self.position_min, position_rx)
 
     def __len__(self):
-        return len(self.wave_chunks)
+        return self.iteration
 
     def __getitem__(self, idx):
+        idx = idx % self.length
         wave_signal = self.wave_chunks[idx]
         position_rx = self.positions_rx[idx]
         position_tx = self.positions_tx[idx]
