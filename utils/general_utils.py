@@ -90,19 +90,13 @@ def build_rotation(rot):
 
         q = F.normalize(rot, dim=-1)
 
-        R = torch.zeros((q.size(0), 3, 3), device='cuda')
-
         r, x, y, z = q.unbind(-1)
 
-        R[:, 0, 0] = 1 - 2 * (y*y + z*z)
-        R[:, 0, 1] = 2 * (x*y - r*z)
-        R[:, 0, 2] = 2 * (x*z + r*y)
-        R[:, 1, 0] = 2 * (x*y + r*z)
-        R[:, 1, 1] = 1 - 2 * (x*x + z*z)
-        R[:, 1, 2] = 2 * (y*z - r*x)
-        R[:, 2, 0] = 2 * (x*z - r*y)
-        R[:, 2, 1] = 2 * (y*z + r*x)
-        R[:, 2, 2] = 1 - 2 * (x*x + y*y)
+        R = torch.stack([
+            1 - 2 * (y*y + z*z), 2 * (x*y - r*z), 2 * (x*z + r*y),
+            2 * (x*y + r*z), 1 - 2 * (x*x + z*z), 2 * (y*z - r*x),
+            2 * (x*z - r*y), 2 * (y*z + r*x), 1 - 2 * (x*x + y*y)
+        ], dim=1).view(-1, 3, 3)
 
     elif rot.shape[-1] == 8:
 
@@ -115,27 +109,16 @@ def build_rotation(rot):
         a, b, c, d = q_l.unbind(-1)
         p, q, r, s = q_r.unbind(-1)
 
-        R = torch.zeros((rot.size(0), 4, 4), device='cuda')
+        M_l = torch.stack([a, -b, -c, -d,
+                           b, a, -d, c,
+                           c, d, a, -b,
+                           d, -c, b, a], dim=1).view(-1, 4, 4)
+        M_r = torch.stack([p, q, r, s,
+                           -q, p, -s, r,
+                           -r, s, p, -q,
+                           -s, -r, q, p], dim=1).view(-1, 4, 4)
 
-        R[..., 0, 0] = a*p + b*q + c*r + d*s
-        R[..., 0, 1] = a*q - b*p - c*s + d*r
-        R[..., 0, 2] = a*r + b*s - c*p - d*q
-        R[..., 0, 3] = a*s - b*r + c*q - d*p
-
-        R[..., 1, 0] = a*q - b*p + c*s - d*r
-        R[..., 1, 1] = a*p + b*q - c*r - d*s
-        R[..., 1, 2] = a*s - b*r - c*q + d*p
-        R[..., 1, 3] = a*r + b*s + c*p + d*q
-
-        R[..., 2, 0] = a*r - b*s - c*p + d*q
-        R[..., 2, 1] = a*s + b*r + c*q + d*p
-        R[..., 2, 2] = a*p - b*q + c*r - d*s
-        R[..., 2, 3] = a*q + b*p - c*s - d*r
-
-        R[..., 3, 0] = a*s + b*r - c*q - d*p
-        R[..., 3, 1] = a*r - b*s + c*p - d*q
-        R[..., 3, 2] = a*q + b*p + c*s + d*r
-        R[..., 3, 3] = a*p - b*q - c*r + d*s
+        R = M_l @ M_r
 
     return R
 
