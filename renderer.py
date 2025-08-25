@@ -45,88 +45,75 @@ class AVRRender(nn.Module):
         n_lenseq = self.seq_len
 
         # get the pts 3d positions along each ray
-        rays, _, _ = directions(n_azi=self.n_azi, n_ele=self.n_ele)
+        dir, _, _ = directions(n_azi=self.n_azi, n_ele=self.n_ele)
         d_vals = torch.linspace(0., 1., self.n_samples, device=device) * \
             (self.far - self.near) + self.near  # scale t with near and far
+        ray_pts = rays_o.unsqueeze(1).unsqueeze(2) + (dir.unsqueeze(1) * (d_vals.unsqueeze(
+            0).unsqueeze(2))).unsqueeze(0)  # [bs, n_azi*n_ele+2 (N_rays), N_samples, 3]
 
-        # Initialize accumulator for the final signal
-        receive_sig = torch.zeros(
-            (bs, n_lenseq//2+1), device=device, dtype=torch.complex64)
+        # normalize the input
+        network_pts = normalize_points(ray_pts.reshape(
+            bs, -1, 3), self.coord_min, self.coord_max)
+        # [bs, N_rays * N_samples, 3]
+        network_view = -dir.unsqueeze(0).unsqueeze(2).expand(
+            ray_pts.size()).reshape(bs, -1, 3)
+        network_tx = normalize_points(position_tx.unsqueeze(1).expand(
+            *network_pts.size()), self.coord_min, self.coord_max)
+        if direction_tx is not None:
+            network_dir_tx = direction_tx.unsqueeze(1).expand(
+                *network_pts.size())  # [bs, N_rays * N_samples, 3]
 
-        for i in range(rays.shape[0]):
+        # get network output
+        if direction_tx is not None:
+            attn, signal = self.network_fn(
+                network_pts, network_view, network_tx, network_dir_tx)
+        else:
+            attn, signal = self.network_fn(
+                network_pts, network_view, network_tx)
+        attn = attn.view(bs, -1, self.n_samples)  # [bs, N_rays, N_samples]
+        # [bs, N_rays, N_samples, N_lenseq]
+        signal = signal.view(bs, -1, self.n_samples, signal.size(-1))
 
-            dir = rays[i:i+1]  # [1, 3]
+        # bounce points to rx delay samples
+        pts2rx_idx = self.fs * d_vals / self.speed  # [N_samples]
+        shift_samples = torch.round(pts2rx_idx)  # [N_samples]
+        # apply zero mask to the end of the signal
+        zero_mask_tail = torch.where((torch.arange(
+            signal.size(-1)-1, 0-1, -1).cuda().unsqueeze(0) - shift_samples.unsqueeze(1)) > 0, 1, 0).cuda()
+        signal = signal * zero_mask_tail
 
-            ray_pts = rays_o.unsqueeze(1).unsqueeze(
-                2) + (dir.unsqueeze(1) * d_vals.view(1, -1, 1)).unsqueeze(0)  # [bs, 1, N_samples, 3]
+        # tx to bounce points delay samples
+        tx2pts_idx = torch.linalg.vector_norm(denormalize_points(
+            network_tx - network_pts, self.coord_min, self.coord_max), dim=-1).reshape(*attn.shape) * self.fs / self.speed  # [bs, N_rays, N_samples]
+        delay_samples = torch.clamp(torch.round(
+            tx2pts_idx), min=0, max=signal.size(-1) - 1).unsqueeze(-1)
+        range_tensor = torch.arange(signal.size(-1)).cuda()  # [N_lenseq]
+        # [bs, N_rays, N_samples, N_lenseq]
+        zero_mask_tx2pts = range_tensor >= delay_samples
+        signal = signal * zero_mask_tx2pts  # [bs, N_rays, N_samples, N_lenseq]
 
-            # normalize the input
-            network_pts = normalize_points(ray_pts.reshape(
-                bs, -1, 3), self.coord_min, self.coord_max)
-            # [bs, N_samples, 3]
-            network_view = -dir.expand_as(network_pts)
-            network_tx = normalize_points(position_tx.unsqueeze(
-                1).expand_as(network_pts), self.coord_min, self.coord_max)
-            if direction_tx is not None:
-                network_dir_tx = direction_tx.unsqueeze(
-                    1).expand_as(network_pts)  # [bs, N_samples, 3]
+        # apply 1/d attenuations in time domain by shifting the samples
+        prev_part = int(0.1 / self.speed * self.fs)
+        ideal_dis2rx = torch.arange(
+            0, signal.size(-1)*2.5, device='cuda') / self.fs * self.speed
+        # account for path loss term
+        path_loss = self.pathloss / (ideal_dis2rx + 1e-3)
+        path_loss[0:prev_part] = path_loss[prev_part+1]
+        path_loss_all = torch.stack([path_loss[i:i+signal.size(-1)]
+                                    for i in shift_samples.detach().cpu().numpy().astype(int)])
 
-            # get network output
-            if direction_tx is not None:
-                attn, signal = self.network_fn(
-                    network_pts.reshape(-1, 3), network_view, network_tx, network_dir_tx)
-            else:
-                attn, signal = self.network_fn(
-                    network_pts.reshape(-1, 3), network_view, network_tx)
+        # Apply fft, and phase shift
+        fft_sig = torch.fft.rfft(signal.float() * path_loss_all, dim=-1)
+        phase_shift = torch.exp(-1j*2*np.pi/signal.size(-1)*torch.arange(
+            0, signal.size(-1)//2+1).cuda().unsqueeze(0)*pts2rx_idx.unsqueeze(1))
+        shifted_signal = fft_sig * phase_shift
 
-            attn = attn.view(bs, 1, self.n_samples)  # [bs, 1, N_samples]
-            # [bs, 1, N_samples, N_lenseq]
-            signal = signal.view(bs, 1, self.n_samples, n_lenseq)
+        # audio signal rendering for each ray
+        batch_n_rays_signal = acoustic_render(
+            attn, shifted_signal, d_vals)  # [bs, N_rays, N_lenseq]
 
-            # bounce points to rx delay samples
-            pts2rx_idx = self.fs * d_vals / self.speed  # [N_samples]
-            shift_samples = torch.round(pts2rx_idx)  # [N_samples]
-            # apply zero mask to the end of the signal
-            zero_mask_tail = torch.where((torch.arange(
-                n_lenseq - 1, -1, -1, device=device).unsqueeze(0) - shift_samples.unsqueeze(1)) > 0, 1, 0).cuda()
-            signal = signal * zero_mask_tail
-
-            # tx to bounce points delay samples
-            tx2pts_idx = torch.linalg.vector_norm(denormalize_points(
-                network_tx - network_pts, self.coord_min, self.coord_max), dim=-1).reshape(*attn.shape) * self.fs / self.speed
-            delay_samples = torch.clamp(torch.round(
-                tx2pts_idx), min=0, max=n_lenseq - 1).unsqueeze(-1)
-            range_tensor = torch.arange(n_lenseq, device=device)  # [N_lenseq]
-            # [bs, 1, N_samples, N_lenseq]
-            zero_mask_tx2pts = range_tensor >= delay_samples
-            signal = signal * zero_mask_tx2pts  # [bs, 1, N_samples, N_lenseq]
-
-            # apply 1/d attenuations in time domain by shifting the samples
-            prev_part = int(0.1 / self.speed * self.fs)
-            ideal_dis2rx = torch.arange(
-                0, n_lenseq * 2.5, device=device) / self.fs * self.speed
-            # account for path loss term
-            path_loss = self.pathloss / (ideal_dis2rx + 1e-3)
-            path_loss[0:prev_part] = path_loss[prev_part+1]
-            path_loss_all = torch.stack(
-                [path_loss[i:i+n_lenseq] for i in shift_samples.detach().cpu().numpy().astype(int)])
-
-            # Apply fft, and phase shift
-            fft_sig = torch.fft.rfft(signal.float() * path_loss_all, dim=-1)
-
-            freqs = torch.arange(
-                0, n_lenseq//2+1, device=device).unsqueeze(0)
-            phase_shift = torch.exp(-1j*2*np.pi/n_lenseq *
-                                    freqs * pts2rx_idx.unsqueeze(1))
-            shifted_signal = fft_sig * phase_shift
-
-            # audio signal rendering for the current ray
-
-            ray_signal = acoustic_render(
-                attn, shifted_signal, d_vals).squeeze(1)  # [bs, N_lenseq]
-
-            # accumulate signal
-            receive_sig += ray_signal  # [bs, N_lenseq]
+        # combine signal
+        receive_sig = torch.sum(batch_n_rays_signal, dim=-2)  # [bs, N_lenseq]
 
         return receive_sig
 
