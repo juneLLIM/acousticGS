@@ -10,7 +10,7 @@
 #
 
 import torch
-from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation, build_rotation_4d, build_scaling_rotation_4d
+from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
 from torch import nn
 from utils.general_utils import strip_symmetric, build_scaling_rotation
 from utils.sh_utils import eval_sh
@@ -26,23 +26,11 @@ class GaussianModel(nn.Module):
     def setup_functions(self):
         def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation):
 
-            if self.gaussian_dim == 3:
-                L = build_scaling_rotation(
-                    scaling_modifier * scaling, rotation)
-                actual_covariance = L @ L.transpose(1, 2)
-                symm = strip_symmetric(actual_covariance)
+            L = build_scaling_rotation(
+                scaling_modifier * scaling, rotation)
+            covariance = L @ L.transpose(1, 2)
 
-            else:
-                L = build_scaling_rotation_4d(
-                    scaling_modifier * scaling, rotation)
-                actual_covariance = L @ L.transpose(1, 2)
-                cov_11 = actual_covariance[:, :3, :3]
-                cov_12 = actual_covariance[:, 0:3, 3:4]
-                cov_t = actual_covariance[:, 3:4, 3:4]
-                current_covariance = cov_11 - \
-                    cov_12 @ cov_12.transpose(1, 2) / cov_t
-                symm = strip_symmetric(current_covariance)
-            return symm
+            return covariance
 
         self.scaling_activation = torch.exp
         self.scaling_inverse_activation = torch.log
@@ -436,14 +424,9 @@ class GaussianModel(nn.Module):
             self.get_scaling, dim=1).values > self.config.densification.threshold_scale)
 
         stds = self.get_scaling[selected_pts_mask].repeat(N, 1)
-        if self.gaussian_dim == 3:
-            means = torch.zeros((stds.size(0), 3), device="cuda")
-            rots = build_rotation(
-                self._rotation[selected_pts_mask]).repeat(N, 1, 1)
-        else:
-            means = torch.zeros((stds.size(0), 4), device="cuda")
-            rots = build_rotation_4d(
-                self._rotation[selected_pts_mask]).repeat(N, 1, 1)
+        means = torch.zeros_like(self.get_mean[selected_pts_mask].repeat(N, 1))
+        rots = build_rotation(
+            self._rotation[selected_pts_mask]).repeat(N, 1, 1)
         samples = torch.normal(mean=means, std=stds)
         new_mean = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + \
             self.get_mean[selected_pts_mask].repeat(N, 1)

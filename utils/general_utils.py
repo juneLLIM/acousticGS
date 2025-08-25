@@ -15,6 +15,7 @@ from datetime import datetime
 import pytz
 import numpy as np
 import random
+import torch.nn.functional as F
 
 
 def inverse_sigmoid(x):
@@ -83,77 +84,65 @@ def strip_symmetric(sym):
     return strip_lowerdiag(sym)
 
 
-def build_rotation(r):
-    norm = torch.sqrt(r[:, 0]*r[:, 0] + r[:, 1]*r[:, 1] +
-                      r[:, 2]*r[:, 2] + r[:, 3]*r[:, 3])
+def build_rotation(rot):
 
-    q = r / norm[:, None]
+    if rot.shape[-1] == 4:
 
-    R = torch.zeros((q.size(0), 3, 3), device='cuda')
+        q = F.normalize(rot, dim=-1)
 
-    r = q[:, 0]
-    x = q[:, 1]
-    y = q[:, 2]
-    z = q[:, 3]
+        R = torch.zeros((q.size(0), 3, 3), device='cuda')
 
-    R[:, 0, 0] = 1 - 2 * (y*y + z*z)
-    R[:, 0, 1] = 2 * (x*y - r*z)
-    R[:, 0, 2] = 2 * (x*z + r*y)
-    R[:, 1, 0] = 2 * (x*y + r*z)
-    R[:, 1, 1] = 1 - 2 * (x*x + z*z)
-    R[:, 1, 2] = 2 * (y*z - r*x)
-    R[:, 2, 0] = 2 * (x*z - r*y)
-    R[:, 2, 1] = 2 * (y*z + r*x)
-    R[:, 2, 2] = 1 - 2 * (x*x + y*y)
+        r, x, y, z = q.unbind(-1)
+
+        R[:, 0, 0] = 1 - 2 * (y*y + z*z)
+        R[:, 0, 1] = 2 * (x*y - r*z)
+        R[:, 0, 2] = 2 * (x*z + r*y)
+        R[:, 1, 0] = 2 * (x*y + r*z)
+        R[:, 1, 1] = 1 - 2 * (x*x + z*z)
+        R[:, 1, 2] = 2 * (y*z - r*x)
+        R[:, 2, 0] = 2 * (x*z - r*y)
+        R[:, 2, 1] = 2 * (y*z + r*x)
+        R[:, 2, 2] = 1 - 2 * (x*x + y*y)
+
+    elif rot.shape[-1] == 8:
+
+        l = rot[..., :4]
+        r = rot[..., 4:]
+
+        q_l = F.normalize(l, dim=-1)
+        q_r = F.normalize(r, dim=-1)
+
+        a, b, c, d = q_l.unbind(-1)
+        p, q, r, s = q_r.unbind(-1)
+
+        R = torch.zeros((rot.size(0), 4, 4), device='cuda')
+
+        R[..., 0, 0] = a*p + b*q + c*r + d*s
+        R[..., 0, 1] = a*q - b*p - c*s + d*r
+        R[..., 0, 2] = a*r + b*s - c*p - d*q
+        R[..., 0, 3] = a*s - b*r + c*q - d*p
+
+        R[..., 1, 0] = a*q - b*p + c*s - d*r
+        R[..., 1, 1] = a*p + b*q - c*r - d*s
+        R[..., 1, 2] = a*s - b*r - c*q + d*p
+        R[..., 1, 3] = a*r + b*s + c*p + d*q
+
+        R[..., 2, 0] = a*r - b*s - c*p + d*q
+        R[..., 2, 1] = a*s + b*r + c*q + d*p
+        R[..., 2, 2] = a*p - b*q + c*r - d*s
+        R[..., 2, 3] = a*q + b*p - c*s - d*r
+
+        R[..., 3, 0] = a*s + b*r - c*q - d*p
+        R[..., 3, 1] = a*r - b*s + c*p - d*q
+        R[..., 3, 2] = a*q + b*p + c*s + d*r
+        R[..., 3, 3] = a*p - b*q - c*r + d*s
+
     return R
 
 
 def build_scaling_rotation(s, r):
-    L = torch.zeros((s.shape[0], 3, 3), dtype=torch.float, device="cuda")
+    L = torch.diag_embed(s)
     R = build_rotation(r)
-
-    L[:, 0, 0] = s[:, 0]
-    L[:, 1, 1] = s[:, 1]
-    L[:, 2, 2] = s[:, 2]
-
-    L = L @ R
-    return L
-
-
-def build_rotation_4d(rot):
-    l = rot[..., :4]
-    r = rot[..., 4:]
-
-    l_norm = torch.norm(l, dim=-1, keepdim=True)
-    r_norm = torch.norm(r, dim=-1, keepdim=True)
-
-    q_l = l / l_norm
-    q_r = r / r_norm
-
-    a, b, c, d = q_l.unbind(-1)
-    p, q, r, s = q_r.unbind(-1)
-
-    M_l = torch.stack([a, -b, -c, -d,
-                       b, a, -d, c,
-                       c, d, a, -b,
-                       d, -c, b, a]).view(4, 4, -1).permute(2, 0, 1)
-    M_r = torch.stack([p, q, r, s,
-                       -q, p, -s, r,
-                       -r, s, p, -q,
-                       -s, -r, q, p]).view(4, 4, -1).permute(2, 0, 1)
-    A = M_l @ M_r
-    A = A.flip(1, 2)
-    return A
-
-
-def build_scaling_rotation_4d(s, rot):
-    L = torch.zeros((s.shape[0], 4, 4), dtype=torch.float, device="cuda")
-    R = build_rotation_4d(rot)
-
-    L[:, 0, 0] = s[:, 0]
-    L[:, 1, 1] = s[:, 1]
-    L[:, 2, 2] = s[:, 2]
-    L[:, 3, 3] = s[:, 3]
 
     L = R @ L
     return L
