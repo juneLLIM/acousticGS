@@ -235,7 +235,7 @@ class GaussianModel(nn.Module):
             rots = torch.zeros((count, 4), device="cuda")
             rots[:, 0] = 1
 
-            self.t = torch.randint(self.seq_len, (count, 1), device="cuda")
+            self.t = torch.randint(self.seq_len, (count,), device="cuda")
         else:
             mean = torch.rand(count, 4, device="cuda") * \
                 (self.config.rendering.coord_max - self.config.rendering.coord_min) + \
@@ -251,18 +251,17 @@ class GaussianModel(nn.Module):
         # Initialize SH feature for magnitude
         # DC component is initialized to 1.0, rest are 0.
         features = torch.zeros(
-            (count, 1, (self.max_sh_degree + 1) ** 2), device="cuda")
-        features[:, :, 0] = 1.0
+            (count, (self.max_sh_degree + 1) ** 2), device="cuda")
+        features[:, 0] = 1.0
 
         # Initialize with low opacity
         opacities = self.inverse_opacity_activation(
             0.1 * torch.ones((count, 1), dtype=torch.float, device="cuda"))
 
         self._mean = nn.Parameter(mean.requires_grad_(True))
-        self._features_dc = nn.Parameter(features[:, :, 0:1].transpose(
-            1, 2).contiguous().requires_grad_(True))
+        self._features_dc = nn.Parameter(features[:, 0:1].requires_grad_(True))
         self._features_rest = nn.Parameter(
-            features[:, :, 1:].transpose(1, 2).contiguous().requires_grad_(True))
+            features[:, 1:].requires_grad_(True))
         self._scaling = nn.Parameter(scales.requires_grad_(True))
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
@@ -433,9 +432,8 @@ class GaussianModel(nn.Module):
         new_scaling = self.scaling_inverse_activation(
             self.get_scaling[selected_pts_mask].repeat(N, 1) / (0.8*N))
         new_rotation = self._rotation[selected_pts_mask].repeat(N, 1)
-        new_features_dc = self._features_dc[selected_pts_mask].repeat(N, 1, 1)
-        new_features_rest = self._features_rest[selected_pts_mask].repeat(
-            N, 1, 1)
+        new_features_dc = self._features_dc[selected_pts_mask].repeat(N, 1)
+        new_features_rest = self._features_rest[selected_pts_mask].repeat(N, 1)
         new_opacity = self._opacity[selected_pts_mask].repeat(N, 1)
 
         self.densification_postfix(new_mean, new_features_dc, new_features_rest,
