@@ -18,7 +18,6 @@ import wandb
 from gaussian_model import GaussianModel
 from torch.utils.data import DataLoader
 from datasets import WaveDataset
-from renderer import AVRRender
 from utils.criterion import Criterion
 from utils.general_utils import safe_state
 from utils.metric import metric_cal
@@ -88,17 +87,16 @@ def training(config):
             print(
                 f"W&B login failed: {e}\nTraining will proceed without W&B logging.")
 
-    # Initialize model and renderer
+    # Initialize gaussian model
     gaussians = GaussianModel(config)
-    renderer = AVRRender(networks_fn=gaussians, config=config)
 
     # Setup data
     train_dataset = WaveDataset(config, eval=False)
     test_dataset = WaveDataset(config, eval=True)
     train_loader = DataLoader(
-        train_dataset, batch_size=1, shuffle=True, num_workers=4, pin_memory=True)
+        train_dataset, batch_size=config.training.batchsize, shuffle=True, num_workers=4, pin_memory=True)
     test_loader = DataLoader(
-        test_dataset, batch_size=1, shuffle=False, num_workers=4, pin_memory=True)
+        test_dataset, batch_size=config.training.batchsize, shuffle=False, num_workers=4, pin_memory=True)
 
     # Setup loss function
     criterion = Criterion(config)
@@ -135,7 +133,8 @@ def training(config):
         gt_freq, position_rx, position_tx = batch
 
         # Render
-        pred_freq = renderer(position_rx.cuda(), position_tx.cuda())
+        pred_time = gaussians(position_rx.cuda())
+        pred_freq = torch.fft.rfft(pred_time, dim=-1)
 
         # Compute loss
         loss_dict, gt_time, pred_time = criterion(pred_freq, gt_freq.cuda())
@@ -193,7 +192,7 @@ def training(config):
 
     progress_bar.close()
     print("\nTraining complete.")
-    if config.logging.use_wandb:
+    if config.logging.wandb:
         wandb.finish()
 
 

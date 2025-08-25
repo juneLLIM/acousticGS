@@ -72,21 +72,8 @@ class GaussianModel(nn.Module):
 
         self.setup_functions()
 
-    def forward(self, network_pts, network_view, network_tx):
-
-        M = network_pts.shape[0]
-        N = self.get_mean.shape[0]
-        C = self.seq_len
-
-        # Batchify the rendering to avoid memory issues
-        final_opacity = torch.empty(M, device=network_pts.device)
-        final_signal = torch.empty(M, C, device=network_pts.device)
-        for i, point in enumerate(network_pts):
-            signal, opacity = self.render_signal_at_points(point.unsqueeze(0))
-            final_opacity[i] = opacity
-            final_signal[i] = signal
-
-        return final_opacity, final_signal
+    def forward(self, network_pts, network_view=None, network_tx=None):
+        return self.render_signal_at_points(network_pts)
 
     def capture(self):
         if self.gaussian_dim == 3:
@@ -178,42 +165,28 @@ class GaussianModel(nn.Module):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
 
     def eval_features(self, query_points):
-        """
-        Batchified nested loop
-        """
-        # query_points: (M, 3)
-        M = query_points.shape[0]
-        N = self.get_mean.shape[0]
-        batch_size = self.config.training.batchsize
 
-        # Pre-allocate the final features tensor with shape (M, N, C)
-        all_features = torch.empty(
-            M, N, self.seq_len, device=query_points.device)
+        # query_points: (B, 3)
+        B = query_points.shape[0]
+        N = self.get_mean.shape[0]
 
         # Pre-fetch gaussian features
-        mean = self.get_mean
-        sh = self.get_features.transpose(1, 2)  # (N, D, C)
+        mean = self.get_mean[:, :3]    # (N, 3)
+        sh = self.get_features  # (N, C)
 
-        for i in range(0, M):
-            for j in range(0, N, batch_size):
-                start = j
-                end = start + batch_size
+        dir_pp = query_points.unsqueeze(1) - mean    # (B, N, 3)
 
-                # Calculate directions from query_points to mean
-                dir_pp = query_points[i] - mean[start:end]   # (B, 3)
-                dir_pp_normalized = dir_pp / \
-                    (torch.norm(dir_pp, dim=-1, keepdim=True) + 1e-8)   # (B, 3)
+        dir_pp_normalized = dir_pp / \
+            (torch.norm(dir_pp, dim=-1, keepdim=True) + 1e-8)   # (B, N, 3)
 
-                # Evaluate spherical harmonics (B, C)
-                features_batch = eval_sh(
-                    self.active_sh_degree,
-                    sh[start:end],  # (B, D, C)
-                    dir_pp_normalized)  # (B, 3)
+        # Evaluate spherical harmonics (B, N, C)
+        features = eval_sh(
+            self.active_sh_degree,
+            sh.repeat(B, 1, 1).unsqueeze(-2),  # (B, N, 1, C)
+            dir_pp_normalized  # (B, N, 3)
+        )
 
-                # Store results for the batch
-                all_features[i, start:end, :] = features_batch  # (B, C)
-
-        return all_features  # (M, N, C)
+        return features.squeeze(-1)  # (B, N)
 
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
@@ -436,8 +409,8 @@ class GaussianModel(nn.Module):
         new_features_rest = self._features_rest[selected_pts_mask].repeat(N, 1)
         new_opacity = self._opacity[selected_pts_mask].repeat(N, 1)
 
-        self.densification_postfix(new_mean, new_features_dc, new_features_rest,
-                                   new_opacity, new_scaling, new_rotation)
+        self.densification_postfix(
+            new_mean, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation)
 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(
             N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
@@ -485,50 +458,44 @@ class GaussianModel(nn.Module):
 
     def render_signal_at_points(self, query_points):
         """
-        Calculates the contribution of all Gaussians at a set of 3D query points.
+        Calculates the final signal at a set of 3D query points.
 
         Args:
-            query_points (torch.Tensor): (M, 3) tensor of query points.
+            query_points (torch.Tensor): (B, 3) tensor of query points.
 
         Returns:
-            A tuple of (signals, opacities) at the query points.
-            - signals (torch.Tensor): (M, C) tensor of acoustic signals.
-            - opacities (torch.Tensor): (M,) tensor of opacities.
+            final_signal (torch.Tensor): (B, seq_len) tensor of rendered audio signals in time domain.
         """
-        M = query_points.shape[0]
+        B = query_points.shape[0]
         N = self.get_mean.shape[0]
         if N == 0:
-            return torch.zeros(M, self.seq_len, device="cuda"), torch.zeros(M, device="cuda")
+            return torch.zeros(B, self.seq_len, device="cuda"), torch.zeros(B, device="cuda")
 
-        means = self.get_xyz    # (N, 3)
-        scales = self.get_scaling   # (N, 3)
-        rotations = self.get_rotation  # (N, 4)
-        opacities = self.get_opacity  # (N, 1)
-        features = self.eval_features(query_points)  # (M, N, C)
+        speed = self.config.rendering.speed
+        mean = self.get_mean[:, :3]    # (N, 3)
+        t = self.get_mean[:, 3] if self.gaussian_dim == 4 else self.t   # (N)
+        opacity = self.get_opacity  # (N, 1)
+        covariance = self.get_covariance()  # (N, 4, 4)
+        sh = self.eval_features(query_points)  # (B, N)
 
-        # Build covariance matrices and compute inverse
-        R = build_rotation(rotations)  # (N, 3, 3)
-        S_inv = torch.diag_embed(1.0 / scales)  # (N, 3, 3)
-        L_inv = S_inv @ R.transpose(1, 2)  # (N, 3, 3)
+        diff = query_points.unsqueeze(1) - mean.unsqueeze(0)  # (B, N, 3)
+        dist = torch.norm(diff, dim=-1)  # (B, N)
+        jacobian = torch.cat(
+            [diff/(dist.unsqueeze(-1)*speed), torch.ones_like(dist.unsqueeze(-1))], dim=-1)  # (B, N, 4)
 
-        # Transform query points to the Gaussian's local coordinate system
-        diff = query_points.unsqueeze(1) - means.unsqueeze(0)  # (M, N, 3)
-        transformed_diff = (L_inv.unsqueeze(
-            0) @ diff.unsqueeze(-1)).squeeze(-1)  # (M, N, 3)
-        mahalanobis_sq = torch.sum(transformed_diff**2, dim=-1)  # (M, N)
+        rasterized_mean = t + dist/speed  # (B, N)
+        rasterized_var = torch.einsum("bnc,ncc,bnc->bn",  # (B, N)
+                                      jacobian, covariance, jacobian)
 
-        # Calculate contribution of each Gaussian at each query point
-        # Contribution = Signal * Opacity * PDF
-        # (M, N, C) = (M, N, C) * (1, N, 1) * (M, N, 1)
-        gaussians = torch.exp(-0.5 * mahalanobis_sq)  # (M, N)
-        contribution = features * \
-            opacities.unsqueeze(0) * gaussians.unsqueeze(-1)
+        time = torch.arange(self.seq_len, device="cuda")  # (seq_len)
 
-        # Sum contributions from all Gaussians for each query point
-        final_signal = torch.sum(contribution, dim=1)  # (M, C)
+        opacity = opacity.unsqueeze(0)  # (1, N, 1)
+        sh = sh.unsqueeze(-1)  # (B, N, 1)
+        rasterized_mean = rasterized_mean.unsqueeze(-1)  # (B, N, 1)
+        rasterized_var = rasterized_var.unsqueeze(-1)  # (B, N, 1)
+        time = time.unsqueeze(0).unsqueeze(0)  # (1, 1, seq_len)
 
-        # Also compute a combined opacity for alpha compositing
-        opacity_contribution = opacities.transpose(0, 1) * gaussians  # (M, N)
-        final_opacity = torch.sum(opacity_contribution, dim=1)  # (M,)
+        power = torch.exp(-0.5*(time-rasterized_mean) ** 2 / rasterized_var)
+        final_signal = (opacity * sh * power).sum(dim=1)  # (B, seq_len)
 
-        return final_signal, final_opacity
+        return final_signal  # (B, seq_len)

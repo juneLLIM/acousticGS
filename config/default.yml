@@ -40,7 +40,7 @@ audio:
 
 # Training Settings
 training:
-  batchsize: 256
+  batchsize: 64
   lr: 5e-4
   weight_decay: 0
   T_max: 500000
