@@ -11,7 +11,7 @@ path:
 logging:
   project_name: "acoustic-gaussian-splatting"
   short: False
-  wandb: True
+  wandb: False
 
 # Model Initialization
 model:
@@ -40,7 +40,7 @@ audio:
 
 # Training Settings
 training:
-  batchsize: 64
+  batchsize: 32
   lr: 5e-4
   weight_decay: 0
   T_max: 500000
@@ -72,7 +72,7 @@ optimizer:
 
 # Densification Parameters
 densification:
-  densify_from_iter: 500
+  densify_from_iter: 100
   densify_until_iter: 15000
   densification_interval: 100
   opacity_reset_interval: 3000

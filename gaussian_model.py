@@ -490,19 +490,19 @@ class GaussianModel(nn.Module):
         time = torch.arange(self.seq_len, device="cuda")  # (seq_len)
 
         # Shape matching
-        opacity = opacity.squeeze()  # (N)
-        sh = sh.unsqueeze(1)  # (B, 1, N)
+        opacity = opacity.unsqueeze(0)  # (1, N, 1)
+        sh = sh.unsqueeze(-1)  # (B, N, 1)
         rasterized_mean = rasterized_mean.unsqueeze(-1)  # (B, N, 1)
         time = time.unsqueeze(0).unsqueeze(0)  # (1, 1, seq_len)
 
         # Gaussian
         X = time - rasterized_mean  # (B, N, seq_len)
-        Y = torch.einsum("bnl,bnc,ncc->blnc", X, jacobian,
-                         build_rotation(self._rotation))
+        # (B, N, 1, 4)
+        R = jacobian.unsqueeze(-2) @ build_rotation(self._rotation).unsqueeze(0)
+        # (B, N, seq_len, 4)
+        Y = X.unsqueeze(-1) @ R / self.get_scaling[None, :, None, :]
 
-        Y = Y / self.get_scaling  # (B, seq_len, N, 4)
-
-        gaussian = torch.exp(-0.5 * (Y ** 2).sum(-1))  # (B, seq_len, N)
-        final_signal = (opacity * sh * gaussian).sum(dim=-1)  # (B, seq_len)
+        gaussian = torch.exp(-0.5 * (Y ** 2).sum(-1))  # (B, N, seq_len)
+        final_signal = (opacity * sh * gaussian).sum(dim=1)  # (B, seq_len)
 
         return final_signal  # (B, seq_len)
