@@ -12,7 +12,7 @@
 import torch
 from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
 from torch import nn
-from utils.general_utils import strip_symmetric, build_scaling_rotation
+from utils.general_utils import build_scaling_rotation, build_rotation
 from utils.sh_utils import eval_sh
 
 try:
@@ -137,7 +137,10 @@ class GaussianModel(nn.Module):
 
     @property
     def get_rotation(self):
-        return self.rotation_activation(self._rotation)
+        if self.gaussian_dim == 3:
+            return self.rotation_activation(self._rotation)
+        else:
+            return self.rotation_activation(self._rotation.view(-1, 4, 2)).view(-1, 8)
 
     @property
     def get_mean(self):
@@ -475,7 +478,6 @@ class GaussianModel(nn.Module):
         mean = self.get_mean[:, :3]    # (N, 3)
         t = self.get_mean[:, 3] if self.gaussian_dim == 4 else self.t   # (N)
         opacity = self.get_opacity  # (N, 1)
-        covariance = self.get_covariance()  # (N, 4, 4)
         sh = self.eval_features(query_points)  # (B, N)
 
         diff = query_points.unsqueeze(1) - mean.unsqueeze(0)  # (B, N, 3)
@@ -484,18 +486,23 @@ class GaussianModel(nn.Module):
             [diff/(dist.unsqueeze(-1)*speed), torch.ones_like(dist.unsqueeze(-1))], dim=-1)  # (B, N, 4)
 
         rasterized_mean = t + dist/speed  # (B, N)
-        rasterized_var = torch.einsum("bnc,ncc,bnc->bn",  # (B, N)
-                                      jacobian, covariance, jacobian)
 
         time = torch.arange(self.seq_len, device="cuda")  # (seq_len)
 
-        opacity = opacity.unsqueeze(0)  # (1, N, 1)
-        sh = sh.unsqueeze(-1)  # (B, N, 1)
+        # Shape matching
+        opacity = opacity.squeeze()  # (N)
+        sh = sh.unsqueeze(1)  # (B, 1, N)
         rasterized_mean = rasterized_mean.unsqueeze(-1)  # (B, N, 1)
-        rasterized_var = rasterized_var.unsqueeze(-1)  # (B, N, 1)
         time = time.unsqueeze(0).unsqueeze(0)  # (1, 1, seq_len)
 
-        power = torch.exp(-0.5*(time-rasterized_mean) ** 2 / rasterized_var)
-        final_signal = (opacity * sh * power).sum(dim=1)  # (B, seq_len)
+        # Gaussian
+        X = time - rasterized_mean  # (B, N, seq_len)
+        Y = torch.einsum("bnl,bnc,ncc->blnc", X, jacobian,
+                         build_rotation(self._rotation))
+
+        Y = Y / self.get_scaling  # (B, seq_len, N, 4)
+
+        gaussian = torch.exp(-0.5 * (Y ** 2).sum(-1))  # (B, seq_len, N)
+        final_signal = (opacity * sh * gaussian).sum(dim=-1)  # (B, seq_len)
 
         return final_signal  # (B, seq_len)
