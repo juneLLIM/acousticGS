@@ -62,20 +62,17 @@ class GaussianModel(nn.Module):
         self.gaussian_dim = config.model.gaussian_dim
         if self.gaussian_dim == 3:
             self.t = torch.empty(0)
-            self.spatial_lr_scale = (
-                config.rendering.coord_max - config.rendering.coord_min) * (3**0.5) / 2.0   # radius
             print("3D Gaussian model selected")
         elif self.gaussian_dim == 4:
-            self.spatial_lr_scale = (
-                (config.rendering.coord_max - config.rendering.coord_min)**2*3+self.seq_len**2)**0.5 / 2.0  # radius
             print("4D Gaussian model selected")
         else:
             raise ValueError("Invalid Gaussian dimension")
 
         self.setup_functions()
 
-    def forward(self, network_pts, network_view=None, network_tx=None):
-        return self.render_signal_at_points(network_pts)
+    def forward(self, position_rx, network_view=None, position_tx=None):
+        query_points = self.normalize_points(position_rx)
+        return self.render_signal_at_points(query_points)
 
     def capture(self):
         if self.gaussian_dim == 3:
@@ -202,9 +199,7 @@ class GaussianModel(nn.Module):
         count = self.config.model.initial_points
 
         if self.gaussian_dim == 3:
-            mean = torch.rand(count, 3, device="cuda") * \
-                (self.config.rendering.coord_max - self.config.rendering.coord_min) + \
-                self.config.rendering.coord_min
+            mean = torch.rand(count, 3, device="cuda") * 2 - 1
 
             # Initialize with small scales
             scales = torch.ones((count, 3), device="cuda") * 0.01
@@ -213,11 +208,10 @@ class GaussianModel(nn.Module):
             rots = torch.zeros((count, 4), device="cuda")
             rots[:, 0] = 1
 
-            self.t = torch.randint(self.seq_len, (count,), device="cuda")
+            self.t = torch.randint(
+                self.seq_len, (count,), device="cuda") / self.seq_len * 2 - 1
         else:
-            mean = torch.rand(count, 4, device="cuda") * \
-                (self.config.rendering.coord_max - self.config.rendering.coord_min) + \
-                self.config.rendering.coord_min
+            mean = torch.rand(count, 4, device="cuda") * 2 - 1
             # Initialize with small scales
             scales = torch.ones((count, 4), device="cuda") * 0.01
 
@@ -254,8 +248,8 @@ class GaussianModel(nn.Module):
     def setup_optimizer(self):
 
         l = [
-            {'params': [self._mean], 'lr': self.config.optimizer.position_lr_init *
-                self.spatial_lr_scale, "name": "mean"},
+            {'params': [self._mean],
+                'lr': self.config.optimizer.position_lr_init, "name": "mean"},
             {'params': [self._features_dc],
                 'lr': self.config.optimizer.feature_lr, "name": "f_dc"},
             {'params': [self._features_rest],
@@ -278,8 +272,8 @@ class GaussianModel(nn.Module):
             except:
                 # A special version of the rasterizer is required to enable sparse adam
                 self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
-        self.mean_scheduler_args = get_expon_lr_func(lr_init=self.config.optimizer.position_lr_init * self.spatial_lr_scale,
-                                                     lr_final=self.config.optimizer.position_lr_final * self.spatial_lr_scale,
+        self.mean_scheduler_args = get_expon_lr_func(lr_init=self.config.optimizer.position_lr_init,
+                                                     lr_final=self.config.optimizer.position_lr_final,
                                                      lr_delay_mult=self.config.optimizer.position_lr_delay_mult,
                                                      max_steps=self.config.optimizer.position_lr_max_steps)
 
@@ -461,12 +455,25 @@ class GaussianModel(nn.Module):
             self.get_mean.grad[update_filter], dim=-1, keepdim=True)
         self.denom[update_filter] += 1
 
+    def normalize_speed(self, speed):
+        # Both should be multiplied by 2 originally
+        dist_ratio = 1 / (self.config.rendering.coord_max -
+                          self.config.rendering.coord_min)
+        time_ratio = self.config.audio.fs / self.seq_len
+        return speed * dist_ratio / time_ratio
+
+    def normalize_points(self, input_pts):
+        return 2 * (input_pts - self.config.rendering.coord_min) / (self.config.rendering.coord_max - self.config.rendering.coord_min) - 1
+
+    def denormalize_points(self, input_pts):
+        return (input_pts + 1) / 2 * (self.config.rendering.coord_max - self.config.rendering.coord_min) + self.config.rendering.coord_min
+
     def render_signal_at_points(self, query_points):
         """
         Calculates the final signal at a set of 3D query points.
 
         Args:
-            query_points (torch.Tensor): (B, 3) tensor of query points.
+            query_points (torch.Tensor): (B, 3) tensor of normalized query points.
 
         Returns:
             final_signal (torch.Tensor): (B, seq_len) tensor of rendered audio signals in time domain.
@@ -492,15 +499,15 @@ class GaussianModel(nn.Module):
         rasterized_var = torch.einsum("bnc,ncc,bnc->bn",  # (B, N)
                                       jacobian, covariance, jacobian)
 
-        time = torch.arange(self.seq_len, device="cuda")  # (seq_len)
-
+        t_step = torch.linspace(-1., 1., self.seq_len,
+                                device="cuda")  # (seq_len)
         opacity = opacity.unsqueeze(0)  # (1, N, 1)
         sh = sh.unsqueeze(-1)  # (B, N, 1)
         rasterized_mean = rasterized_mean.unsqueeze(-1)  # (B, N, 1)
         rasterized_var = rasterized_var.unsqueeze(-1)  # (B, N, 1)
-        time = time.unsqueeze(0).unsqueeze(0)  # (1, 1, seq_len)
+        t_step = t_step.unsqueeze(0).unsqueeze(0)  # (1, 1, seq_len)
 
-        power = torch.exp(-0.5*(time-rasterized_mean) ** 2 / rasterized_var)
+        power = torch.exp(-0.5*(t_step-rasterized_mean) ** 2 / rasterized_var)
         final_signal = (opacity * sh * power).sum(dim=1)  # (B, seq_len)
 
         return final_signal  # (B, seq_len)
