@@ -139,7 +139,10 @@ class GaussianModel(nn.Module):
 
     @property
     def get_rotation(self):
-        return self.rotation_activation(self._rotation)
+        if self.gaussian_dim == 3:
+            return self.rotation_activation(self._rotation)
+        else:
+            return self.rotation_activation(self._rotation.view(-1, 4, 2)).view(-1, 8)
 
     @property
     def get_mean(self):

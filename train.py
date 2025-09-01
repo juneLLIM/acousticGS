@@ -109,7 +109,7 @@ def training(config):
         with torch.no_grad():
 
             # Densification
-            if iteration > config.densification.densify_from_iter and iteration < config.densification.densify_until_iter:
+            if iteration >= config.densification.densify_from_iter and iteration < config.densification.densify_until_iter:
 
                 if iteration % config.densification.densification_interval == 0:
                     gaussians.densify_and_prune()
