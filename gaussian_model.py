@@ -10,9 +10,8 @@
 #
 
 import torch
-from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
+from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation, build_scaling_rotation
 from torch import nn
-from utils.general_utils import strip_symmetric, build_scaling_rotation
 from utils.sh_utils import eval_sh
 
 try:
@@ -468,6 +467,46 @@ class GaussianModel(nn.Module):
     def denormalize_points(self, input_pts):
         return (input_pts + 1) / 2 * (self.config.rendering.coord_max - self.config.rendering.coord_min) + self.config.rendering.coord_min
 
+    def rasterize(self, query_points):
+        """
+        Rasterizes gaussians to the given query points.
+
+        Args:
+            query_points (torch.Tensor): (B, 3) tensor of normalized query points.
+
+        Returns:
+            rasterized_mean (torch.Tensor): (B, N) tensor of rasterized gaussian means.
+            rasterized_var (torch.Tensor): (B, N) tensor of rasterized gaussian variances.
+        """
+        mean = self.get_mean    # (N, 4)
+
+        t = mean[:, 3] if self.gaussian_dim == 4 else self.t   # (N)
+        v = self.normalize_speed(self.config.rendering.speed)
+
+        d = query_points.unsqueeze(1) - mean[:, :3].unsqueeze(0)  # (B, N, 3)
+        l = torch.norm(d, dim=-1)  # (B, N)
+
+        s = self.get_scaling
+        R = build_rotation(self._rotation)
+
+        J0 = d[..., 0] / (v * l)
+        J1 = d[..., 1] / (v * l)
+        J2 = d[..., 2] / (v * l)
+
+        std0 = (J0 * R[..., 0, 0] + J1 * R[..., 1, 0] +
+                J2 * R[..., 2, 0] + R[..., 3, 0]) * s[..., 0]
+        std1 = (J0 * R[..., 0, 1] + J1 * R[..., 1, 1] +
+                J2 * R[..., 2, 1] + R[..., 3, 1]) * s[..., 1]
+        std2 = (J0 * R[..., 0, 2] + J1 * R[..., 1, 2] +
+                J2 * R[..., 2, 2] + R[..., 3, 2]) * s[..., 2]
+        std3 = (J0 * R[..., 0, 3] + J1 * R[..., 1, 3] +
+                J2 * R[..., 2, 3] + R[..., 3, 3]) * s[..., 3]
+
+        rasterized_mean = t + (l / v)  # (B, N)
+        rasterized_var = std0 ** 2 + std1 ** 2 + std2 ** 2 + std3 ** 2
+
+        return rasterized_mean, rasterized_var
+
     def render_signal_at_points(self, query_points):
         """
         Calculates the final signal at a set of 3D query points.
@@ -481,23 +520,12 @@ class GaussianModel(nn.Module):
         B = query_points.shape[0]
         N = self.get_mean.shape[0]
         if N == 0:
-            return torch.zeros(B, self.seq_len, device="cuda"), torch.zeros(B, device="cuda")
+            return torch.zeros(B, self.seq_len, device="cuda")
 
-        speed = self.config.rendering.speed
-        mean = self.get_mean[:, :3]    # (N, 3)
-        t = self.get_mean[:, 3] if self.gaussian_dim == 4 else self.t   # (N)
         opacity = self.get_opacity  # (N, 1)
-        covariance = self.get_covariance()  # (N, 4, 4)
         sh = self.eval_features(query_points)  # (B, N)
 
-        diff = query_points.unsqueeze(1) - mean.unsqueeze(0)  # (B, N, 3)
-        dist = torch.norm(diff, dim=-1)  # (B, N)
-        jacobian = torch.cat(
-            [diff/(dist.unsqueeze(-1)*speed), torch.ones_like(dist.unsqueeze(-1))], dim=-1)  # (B, N, 4)
-
-        rasterized_mean = t + dist/speed  # (B, N)
-        rasterized_var = torch.einsum("bnc,ncc,bnc->bn",  # (B, N)
-                                      jacobian, covariance, jacobian)
+        rasterized_mean, rasterized_var = self.rasterize(query_points)
 
         t_step = torch.linspace(-1., 1., self.seq_len,
                                 device="cuda")  # (seq_len)

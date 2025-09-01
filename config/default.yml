@@ -36,11 +36,6 @@ model:
 rendering:
   coord_min: -6
   coord_max:  6
-  near: 0
-  far: 4
-  n_samples: 6
-  n_azi: 6
-  n_ele: 3
   speed: 343.8
   pathloss: 1.5
 
