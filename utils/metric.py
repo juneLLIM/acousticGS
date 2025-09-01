@@ -6,12 +6,12 @@ import auraloss
 import torch
 
 
-def metric_cal(ori_ir, pred_ir, fs=48000, window=32):
+def metric_cal(gt_ir, pred_ir, fs=48000, window=32):
     """calculate the evaluation metric
 
     Parameters
     ----------
-    ori_ir : np.array
+    gt_ir : np.array
         ground truth impulse response
     pred_ir : np.array
         predicted impulse response
@@ -23,18 +23,18 @@ def metric_cal(ori_ir, pred_ir, fs=48000, window=32):
     evaluation metrics
     """
 
-    if ori_ir.ndim == 1:
-        ori_ir = ori_ir[np.newaxis, :]
+    if gt_ir.ndim == 1:
+        gt_ir = gt_ir[np.newaxis, :]
     if pred_ir.ndim == 1:
         pred_ir = pred_ir[np.newaxis, :]
 
     # prevent numerical issue for log calculation
     multi_stft = auraloss.freq.MultiResolutionSTFTLoss(w_lin_mag=1, fft_sizes=[
                                                        512, 256, 128], win_lengths=[300, 150, 75], hop_sizes=[60, 30, 8])
-    multi_stft_loss = multi_stft(torch.tensor(ori_ir).unsqueeze(
-        1), torch.tensor(pred_ir).unsqueeze(1))
+    multi_stft_loss = multi_stft(torch.tensor(gt_ir).unsqueeze(
+        1), torch.tensor(pred_ir).unsqueeze(1)).item()
 
-    fft_ori = np.fft.fft(ori_ir, axis=-1)
+    fft_ori = np.fft.fft(gt_ir, axis=-1)
     fft_predict = np.fft.fft(pred_ir, axis=-1)
 
     angle_error = np.mean(np.abs(np.cos(np.angle(fft_ori)) - np.cos(np.angle(fft_predict)))) + \
@@ -45,59 +45,49 @@ def metric_cal(ori_ir, pred_ir, fs=48000, window=32):
     amp_error = np.mean(np.abs(amp_ori - amp_predict) / amp_ori)
 
     # calculate the envelop error
-    ori_env = np.abs(hilbert(ori_ir))
+    gt_env = np.abs(hilbert(gt_ir))
     pred_env = np.abs(hilbert(pred_ir))
-    env_error = np.mean(np.abs(ori_env - pred_env) /
-                        np.max(ori_env, axis=1, keepdims=True))
+    env_error = np.mean(np.abs(gt_env - pred_env) /
+                        np.max(gt_env, axis=1, keepdims=True))
 
     # derevie the energy trend
-    ori_energy = 10.0 * \
-        np.log10(np.cumsum(ori_ir[:, ::-1]**2 + 1e-9, axis=-1)[:, ::-1])
+    gt_energy = 10.0 * \
+        np.log10(np.cumsum(gt_ir[:, ::-1]**2 + 1e-9, axis=-1)[:, ::-1])
     pred_energy = 10.0 * \
         np.log10(np.cumsum(pred_ir[:, ::-1]**2 + 1e-9, axis=-1)[:, ::-1])
 
-    ori_energy -= ori_energy[:, 0].reshape(-1, 1)
+    gt_energy -= gt_energy[:, 0].reshape(-1, 1)
     pred_energy -= pred_energy[:, 0].reshape(-1, 1)
 
     # calculate the t60 percentage error and EDT time error
-    ori_t60, ori_edt = t60_EDT_cal(ori_energy, fs=fs)
+    gt_t60, gt_edt = t60_EDT_cal(gt_energy, fs=fs)
     pred_t60, pred_edt = t60_EDT_cal(pred_energy, fs=fs)
-    t60_error = np.mean(np.abs(ori_t60 - pred_t60) / ori_t60)
-    edt_error = np.mean(np.abs(ori_edt - pred_edt))
+    t60_error = np.mean(np.abs(gt_t60 - pred_t60) / gt_t60)
+    edt_error = np.mean(np.abs(gt_edt - pred_edt))
 
     # calculate the C50 error
     base_sample = 0
     samples_50ms = int(0.05 * fs) + base_sample  # Number of samples in 50 ms
     # Compute the energy in the first 50ms and from 50ms to the end
-    energy_ori_early = np.sum(ori_ir[:, base_sample:samples_50ms]**2, axis=-1)
-    energy_ori_late = np.sum(ori_ir[:, samples_50ms:]**2, axis=-1)
+    energy_gt_early = np.sum(gt_ir[:, base_sample:samples_50ms]**2, axis=-1)
+    energy_gt_late = np.sum(gt_ir[:, samples_50ms:]**2, axis=-1)
     energy_pred_early = np.sum(
         pred_ir[:, base_sample:samples_50ms]**2, axis=-1)
     energy_pred_late = np.sum(pred_ir[:, samples_50ms:]**2, axis=-1)
 
     # Calculate C50 for the original and predicted impulse response
-    C50_ori = 10.0 * np.log10(energy_ori_early / energy_ori_late)
+    C50_ori = 10.0 * np.log10(energy_gt_early / energy_gt_late)
     C50_pred = 10.0 * np.log10(energy_pred_early / energy_pred_late)
     C50_error = np.mean(np.abs(C50_ori - C50_pred))
 
     metrics = {
-        "EDT_pred": pred_edt,
-        "T60_pred": pred_t60,
-        "C50_pred": C50_pred,
-        "C80_pred": None,  # Placeholder for C80 calculation
-        "BR_pred": None,   # Placeholder for BR calculation
-        "EDT_gt": ori_edt,
-        "T60_gt": ori_t60,
-        "C50_gt": C50_ori,
-        "C80_gt": None,
-        "BR_gt": None,
-        "T60_error": t60_error,
-        "EDT_error": edt_error,
-        "C50_error": C50_error,
-        "Angle_error": angle_error,
-        "Amplitude_error": amp_error,
-        "Envelope_error": env_error,
-        "Multi_STFT_loss": multi_stft_loss.item()  # 텐서에서 스칼라 값으로 변환
+        'Angle': angle_error,
+        'Amplitude': amp_error,
+        'Envelope': env_error,
+        'T60': t60_error,
+        'C50': C50_error,
+        'EDT': edt_error,
+        'multi_stft': multi_stft_loss
     }
 
     return metrics

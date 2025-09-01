@@ -77,10 +77,10 @@
 #             # Save a comparison plot.
 #             plot_path = os.path.join(plots_path, f'plot_{idx:04d}.png')
 #             plot_and_save_figure(
-#                 pred_sig=rendered_freq,
-#                 ori_sig=gt_freq,
+#                 pred_freq=rendered_freq,
+#                 gt_freq=gt_freq,
 #                 pred_time=rendered_signal.squeeze(),
-#                 ori_time=gt_waveform.squeeze(),
+#                 gt_time=gt_waveform.squeeze(),
 #                 position_rx=position_rx.squeeze(),
 #                 position_tx=position_tx.squeeze(),
 #                 mode_set="render",

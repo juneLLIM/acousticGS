@@ -10,8 +10,21 @@ path:
 # Logging Settings
 logging:
   project_name: "acoustic-gaussian-splatting"
-  short: False
+  log: True # Enable logging
   wandb: True
+  log_freq: 10
+  test_freq: 100
+  viz_freq: 1000
+  save_freq: 100000
+
+# Training Settings
+training:
+  total_iterations: 500000
+  batchsize: 1
+  lr: 5e-4
+  weight_decay: 0
+  T_max: 500000
+  eta_min: 5e-5
 
 # Model Initialization
 model:
@@ -37,17 +50,6 @@ audio:
   seq_len: 2400
   n_fft: 256
   hop_length: 64
-
-# Training Settings
-training:
-  batchsize: 64
-  lr: 5e-4
-  weight_decay: 0
-  T_max: 500000
-  eta_min: 5e-5
-  total_iterations: 500000
-  save_freq: 20000
-  val_freq: 20000
 
 # Loss Function Weights
 loss_weights:

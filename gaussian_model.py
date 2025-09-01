@@ -64,9 +64,11 @@ class GaussianModel(nn.Module):
             self.t = torch.empty(0)
             self.spatial_lr_scale = (
                 config.rendering.coord_max - config.rendering.coord_min) * (3**0.5) / 2.0   # radius
+            print("3D Gaussian model selected")
         elif self.gaussian_dim == 4:
             self.spatial_lr_scale = (
                 (config.rendering.coord_max - config.rendering.coord_min)**2*3+self.seq_len**2)**0.5 / 2.0  # radius
+            print("4D Gaussian model selected")
         else:
             raise ValueError("Invalid Gaussian dimension")
 

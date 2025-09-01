@@ -47,7 +47,7 @@ class WaveDataset(Dataset):  # Renamed from WaveLoader
 
         # Convert lists to tensors for faster processing in __getitem__
         self.wave_chunks = torch.tensor(
-            np.array(self.wave_chunks), dtype=torch.complex64)
+            np.array(self.wave_chunks), dtype=torch.float32)
         self.positions_rx = torch.tensor(
             np.array(self.positions_rx), dtype=torch.float32)
         self.positions_tx = torch.tensor(
@@ -81,7 +81,6 @@ class WaveDataset(Dataset):  # Renamed from WaveLoader
                 0, ::down_sample_rate]  # first resample the IR data
             # index the IR data.
             audio_data = audio_data[self.default_st_idx:self.default_st_idx+seq_len]
-            wave_data = np.fft.rfft(audio_data)
 
             file_ind = int(filename.split('_')[1].split('.')[0])
             position_rx = rx_pos[file_ind]
@@ -89,7 +88,7 @@ class WaveDataset(Dataset):  # Renamed from WaveLoader
 
             self.update_min_max(audio_data, position_rx)
 
-            self.wave_chunks.append(wave_data)
+            self.wave_chunks.append(audio_data)
             self.positions_rx.append(position_rx)
             self.positions_tx.append(position_tx)
 
@@ -107,14 +106,13 @@ class WaveDataset(Dataset):  # Renamed from WaveLoader
         for filename in filenames:
             meta_data = np.load(os.path.join(base_folder, filename))
             audio_data = meta_data['ir'][:seq_len]
-            wave_data = np.fft.rfft(audio_data)
 
             position_rx = meta_data['position_rx']
             position_tx = meta_data['position_tx']
 
             self.update_min_max(audio_data, position_rx)
 
-            self.wave_chunks.append(wave_data)
+            self.wave_chunks.append(audio_data)
             self.positions_rx.append(position_rx)
             self.positions_tx.append(position_tx)
 
@@ -134,7 +132,6 @@ class WaveDataset(Dataset):  # Renamed from WaveLoader
             rir_path = os.path.join(folderpath, "rir.wav")
             audio_data, _ = librosa.load(rir_path, sr=None, mono=True)
             audio_data = audio_data[:seq_len * int(48000 / fs):int(48000 / fs)]
-            wave_data = np.fft.rfft(audio_data)
 
             position_rx = self.load_position(
                 os.path.join(folderpath, "rx_pos.txt"))
@@ -143,7 +140,7 @@ class WaveDataset(Dataset):  # Renamed from WaveLoader
 
             self.update_min_max(audio_data, position_rx)
 
-            self.wave_chunks.append(wave_data)
+            self.wave_chunks.append(audio_data)
             self.positions_rx.append(position_rx)
             self.positions_tx.append(position_tx)
             self.rotations_tx.append(rotation_tx)

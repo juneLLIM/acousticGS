@@ -18,74 +18,26 @@ import wandb
 from gaussian_model import GaussianModel
 from torch.utils.data import DataLoader
 from datasets import WaveDataset
+from utils import logger
 from utils.criterion import Criterion
-from utils.general_utils import safe_state
+from utils.general_utils import safe_state, now_str
 from utils.metric import metric_cal
-from utils.logger import plot_and_save_figure
 from utils.config import load_config
-from utils.visualize import visualize_gaussian_xyt_3d
-
-
-# def log_and_visualize(iteration, losses, config, output_dir):
-#     """Handles all logging and visualization tasks."""
-#     # Log scalar loss values to WandB
-#     log_losses = {k: v for k, v in losses.items() if isinstance(
-#         v, (int, float)) or (hasattr(v, 'numel') and v.numel() == 1)}
-#     wandb.log(log_losses, step=iteration)
-
-#     # Every 100 iterations, calculate and log metrics and visualizations
-#     if iteration % 100 == 0:
-#         fs = config.audio.fs
-#         # Retrieve time-domain waveforms from the losses dictionary
-#         gt_waveform = losses['ori_time']
-#         rendered_signal = losses['pred_time']
-
-#         metrics = metric_cal(gt_waveform.squeeze().cpu().numpy(),
-#                              rendered_signal.squeeze().cpu().numpy(), fs)
-#         wandb.log({f"metrics/{k}": v for k,
-#                   v in metrics.items()}, step=iteration)
-
-#         vis_dir = os.path.join(output_dir, "train_vis")
-#         os.makedirs(vis_dir, exist_ok=True)
-#         save_path = os.path.join(vis_dir, f"iter_{iteration}.png")
-
-#         # Call plotting function
-#         plot_and_save_figure(
-#             pred_sig=losses['pred_freq'].cpu(),
-#             ori_sig=losses['gt_freq'].cpu(),
-#             pred_time=rendered_signal.squeeze().cpu(),
-#             ori_time=gt_waveform.squeeze().cpu(),
-#             position_rx=losses['position_rx'].squeeze().cpu(),
-#             position_tx=losses['position_tx'].squeeze().cpu(),
-#             mode_set="train",
-#             save_path=save_path
-#         )
+from utils.visualize import plot_and_save_figure, visualize_gaussian_xyt_3d
 
 
 def training(config):
 
+    print("-----------------------------------------------")
+    print("Project name: " + config.logging.project_name)
+
     # Setup output directory
-    output_dir = config.path.output
+    output_dir = f'{config.path.output}/{now_str()}'
     print("Output folder: {}".format(output_dir))
     os.makedirs(output_dir, exist_ok=True)
 
     # Save the config file for reproducibility
     shutil.copy(config.path.config, os.path.join(output_dir, "config.yml"))
-
-    # Initialize WandB
-    if config.logging.wandb:
-        try:
-            wandb.login(timeout=5)
-            wandb.init(
-                project=config.logging.project_name,
-                name=os.path.basename(output_dir),
-                config=vars(config)
-            )
-            print("W&B logging is enabled.")
-        except Exception as e:
-            config.logging.wandb = False
-            print(
-                f"W&B login failed: {e}\nTraining will proceed without W&B logging.")
 
     # Initialize gaussian model
     gaussians = GaussianModel(config)
@@ -98,6 +50,9 @@ def training(config):
         train_dataset, batch_size=config.training.batchsize, shuffle=True, num_workers=4, pin_memory=True)
     test_loader = DataLoader(
         test_dataset, batch_size=config.training.batchsize, shuffle=False, num_workers=4, pin_memory=True)
+    print(
+        f"Train: {len(train_dataset)},\t Test: {len(test_dataset)}")
+    print(f"Batchsize: {config.training.batchsize}")
 
     # Setup loss function
     criterion = Criterion(config)
@@ -105,17 +60,22 @@ def training(config):
     # Setup training
     first_iter = 0
     if config.path.checkpoint:
+        print(f"Checkpoint path: {config.path.checkpoint}")
         (model_params, first_iter) = torch.load(
             config.path.checkpoint, weights_only=False)
         gaussians.restore(model_params)
     else:
+        print("No checkpoint path provided, starting from scratch.")
         gaussians.create_random()
+
+    print(f"-----------------------------------------------")
 
     # Setup iteration timing
     iter_start = torch.cuda.Event(enable_timing=True)
     iter_end = torch.cuda.Event(enable_timing=True)
 
     # Training loop
+    print("Training start...")
     progress_bar = tqdm(range(first_iter, config.training.total_iterations),
                         desc="Training progress")
     for iteration, batch in enumerate(train_loader, start=first_iter+1):
@@ -131,14 +91,13 @@ def training(config):
             gaussians.oneupSHdegree()
 
         # Prepare data
-        gt_freq, position_rx, position_tx = batch
+        gt_time, position_rx, position_tx = batch
 
         # Render
         pred_time = gaussians(position_rx.cuda())
-        pred_freq = torch.fft.rfft(pred_time, dim=-1)
 
         # Compute loss
-        loss_dict, gt_time, pred_time = criterion(pred_freq, gt_freq.cuda())
+        loss_dict, gt_freq, pred_freq = criterion(pred_time, gt_time.cuda())
         total_loss = loss_dict["total_loss"]
         total_loss.backward()
 
@@ -162,27 +121,76 @@ def training(config):
             gaussians.optimizer.step()
             gaussians.optimizer.zero_grad(set_to_none=True)
 
-            # # Logging and visualization
-            # if use_wandb and iteration % 10 == 0:
-            #     losses['total'] = total_loss
-            #     losses['learning_rate'] = gaussians.optimizer.param_groups[0]['lr']
-            #     # Pass additional data to the logging function
-            #     losses['pred_freq'] = rendered_freq
-            #     losses['gt_freq'] = gt_freq
-            #     losses['position_rx'] = position_rx
-            #     losses['position_tx'] = position_tx
-            #     log_and_visualize(iteration, losses, config, output_dir)
+            # Logging
+            if iteration % config.logging.log_freq == 0:
 
-            # # Visualize the 3D Gaussian distribution
-            # if iteration % 1000 == 0:
-            #     vis_3d_dir = os.path.join(output_dir, "gaussian_vis_3d")
-            #     os.makedirs(vis_3d_dir, exist_ok=True)
-            #     save_vis_path = os.path.join(
-            #         vis_3d_dir, f"iter_{iteration}.png")
-            #     visualize_gaussian_xyt_3d(gaussians, save_vis_path)
+                if config.logging.wandb:
+                    # Log learning rate and loss to WandB
+                    wandb.log(
+                        {'learning_rate': gaussians.optimizer.param_groups[0]['lr']}, step=iteration)
+                    wandb.log(
+                        {f"loss/{k}": v for k, v in loss_dict.items()}, step=iteration)
+                    wandb.log(
+                        {'number of gaussians': gaussians.get_mean.shape[0]}, step=iteration)
+
+            # Log test set metrics
+            if iteration % config.logging.test_freq == 0:
+
+                final_metric = {}
+
+                for batch in test_loader:
+                    gt_time, position_rx, position_tx = batch
+
+                    pred_time = gaussians(position_rx.cuda())
+
+                    metrics = metric_cal(gt_time.detach().cpu().numpy(),
+                                         pred_time.detach().cpu().numpy(), config.audio.fs)
+
+                    final_metric = {
+                        k: final_metric.get(k, 0) + v * len(batch) for k, v in metrics.items()}
+
+                final_metric = {
+                    k: v / len(test_loader) for k, v in final_metric.items()}
+
+                if config.logging.wandb:
+                    wandb.log(
+                        {f"metrics/{k}": v for k, v in final_metric.items()}, step=iteration)
+
+            # Visualizations
+            if iteration % config.logging.viz_freq == 0:
+
+                # Compute first sample in testset
+                gt_time, position_rx, position_tx = next(iter(test_loader))
+                pred_time = gaussians(position_rx.cuda())
+                loss_dict, gt_freq, pred_freq = criterion(
+                    pred_time, gt_time.cuda())
+
+                # Saving path setup
+                vis_dir = os.path.join(output_dir, "test_vis")
+                os.makedirs(vis_dir, exist_ok=True)
+                save_path = os.path.join(vis_dir, f"iter_{iteration}.png")
+
+                # Call plotting function
+                plot_and_save_figure(
+                    pred_freq=pred_freq[0, :],
+                    gt_freq=gt_freq[0, :],
+                    pred_time=pred_time[0, :],
+                    gt_time=gt_time[0, :],
+                    position_rx=position_rx[0, :],
+                    position_tx=position_tx[0, :],
+                    mode_set="test",
+                    save_path=save_path
+                )
+
+                # # Visualize the 3D Gaussian distribution
+                # vis_3d_dir = os.path.join(output_dir, "gaussian_vis_3d")
+                # os.makedirs(vis_3d_dir, exist_ok=True)
+                # save_vis_path = os.path.join(
+                #     vis_3d_dir, f"iter_{iteration}.png")
+                # visualize_gaussian_xyt_3d(gaussians, save_vis_path)
 
             # Save model
-            if iteration % config.training.save_freq == 0:
+            if iteration % config.logging.save_freq == 0:
                 print(f"\n[ITER {iteration}] Saving Checkpoint")
                 torch.save((gaussians.capture(), iteration), os.path.join(
                     output_dir, f"chkpnt{iteration}.pth"))
@@ -200,13 +208,22 @@ def training(config):
 if __name__ == "__main__":
     config = load_config()
 
-    print("-----------------------------------------------")
-    print("Project name: " + config.logging.project_name)
-    if config.path.checkpoint:
-        print("Checkpoint path: " + config.path.checkpoint)
-    else:
-        print("No checkpoint path provided, starting from scratch.")
-    safe_state(config.logging.short)
-    print("-----------------------------------------------")
+    safe_state(silent=not config.logging.log)
+    print()
+
+    # Initialize WandB
+    if config.logging.wandb:
+        try:
+            wandb.login(timeout=5)
+            wandb.init(
+                project=config.logging.project_name,
+                name=os.path.basename(config.path.output),
+                config=vars(config)
+            )
+            print("W&B logging is enabled.")
+        except Exception as e:
+            config.logging.wandb = False
+            print(
+                f"W&B login failed: {e}\nTraining will proceed without W&B logging.")
 
     training(config)

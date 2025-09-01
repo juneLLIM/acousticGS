@@ -158,7 +158,7 @@ def safe_state(silent):
         def write(self, x):
             if not self.silent:
                 if x.endswith("\n"):
-                    old_f.write(x.replace("\n", f" [{now()}]\n"))
+                    old_f.write(x.replace("\n", f"\n[{now()}]\t"))
                 else:
                     old_f.write(x)
 
@@ -175,3 +175,7 @@ def safe_state(silent):
 
 def now():
     return datetime.now(pytz.timezone("Asia/Seoul")).strftime("%m/%d %H:%M:%S")
+
+
+def now_str():
+    return datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d_%H-%M-%S")
