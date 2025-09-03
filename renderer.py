@@ -45,7 +45,7 @@ class AVRRender(nn.Module):
         n_lenseq = self.seq_len
 
         # get the pts 3d positions along each ray
-        dir, _, _ = directions(n_azi=self.n_azi, n_ele=self.n_ele)
+        dir, _, _ = directions(n_azi=self.n_azi, n_ele=self.n_ele, device=device)
         d_vals = torch.linspace(0., 1., self.n_samples, device=device) * \
             (self.far - self.near) + self.near  # scale t with near and far
         ray_pts = rays_o.unsqueeze(1).unsqueeze(2) + (dir.unsqueeze(1) * (d_vals.unsqueeze(
@@ -79,7 +79,7 @@ class AVRRender(nn.Module):
         shift_samples = torch.round(pts2rx_idx)  # [N_samples]
         # apply zero mask to the end of the signal
         zero_mask_tail = torch.where((torch.arange(
-            signal.size(-1)-1, 0-1, -1).cuda().unsqueeze(0) - shift_samples.unsqueeze(1)) > 0, 1, 0).cuda()
+            signal.size(-1)-1, 0-1, -1).to(device).unsqueeze(0) - shift_samples.unsqueeze(1)) > 0, 1, 0).to(device)
         signal = signal * zero_mask_tail
 
         # tx to bounce points delay samples
@@ -87,7 +87,7 @@ class AVRRender(nn.Module):
             network_tx - network_pts, self.coord_min, self.coord_max), dim=-1).reshape(*attn.shape) * self.fs / self.speed  # [bs, N_rays, N_samples]
         delay_samples = torch.clamp(torch.round(
             tx2pts_idx), min=0, max=signal.size(-1) - 1).unsqueeze(-1)
-        range_tensor = torch.arange(signal.size(-1)).cuda()  # [N_lenseq]
+        range_tensor = torch.arange(signal.size(-1)).to(device)  # [N_lenseq]
         # [bs, N_rays, N_samples, N_lenseq]
         zero_mask_tx2pts = range_tensor >= delay_samples
         signal = signal * zero_mask_tx2pts  # [bs, N_rays, N_samples, N_lenseq]
@@ -95,7 +95,7 @@ class AVRRender(nn.Module):
         # apply 1/d attenuations in time domain by shifting the samples
         prev_part = int(0.1 / self.speed * self.fs)
         ideal_dis2rx = torch.arange(
-            0, signal.size(-1)*2.5, device='cuda') / self.fs * self.speed
+            0, signal.size(-1)*2.5, device=device) / self.fs * self.speed
         # account for path loss term
         path_loss = self.pathloss / (ideal_dis2rx + 1e-3)
         path_loss[0:prev_part] = path_loss[prev_part+1]
@@ -105,12 +105,12 @@ class AVRRender(nn.Module):
         # Apply fft, and phase shift
         fft_sig = torch.fft.rfft(signal.float() * path_loss_all, dim=-1)
         phase_shift = torch.exp(-1j*2*np.pi/signal.size(-1)*torch.arange(
-            0, signal.size(-1)//2+1).cuda().unsqueeze(0)*pts2rx_idx.unsqueeze(1))
+            0, signal.size(-1)//2+1).to(device).unsqueeze(0)*pts2rx_idx.unsqueeze(1))
         shifted_signal = fft_sig * phase_shift
 
         # audio signal rendering for each ray
         batch_n_rays_signal = acoustic_render(
-            attn, shifted_signal, d_vals)  # [bs, N_rays, N_lenseq]
+            attn, shifted_signal, d_vals, device=device)  # [bs, N_rays, N_lenseq]
 
         # combine signal
         receive_sig = torch.sum(batch_n_rays_signal, dim=-2)  # [bs, N_lenseq]
@@ -126,7 +126,7 @@ def denormalize_points(input_pts, coord_min, coord_max):
     return (input_pts + 1) / 2 * (coord_max - coord_min) + coord_min
 
 
-def directions(n_azi, n_ele, random_azi=True):
+def directions(n_azi, n_ele, random_azi=True, device='cpu'):
     """get the ray directions
 
     Parameters
@@ -141,14 +141,14 @@ def directions(n_azi, n_ele, random_azi=True):
     """
 
     # Azimuth direction
-    azi_ray = torch.linspace(0, np.pi*2, n_azi+1)[:-1].cuda()
+    azi_ray = torch.linspace(0, np.pi*2, n_azi+1)[:-1].to(device)
     # Randomlly add an angle shift
-    azi_randadd = (np.pi*2 / n_azi) * torch.rand(n_azi).cuda()
+    azi_randadd = (np.pi*2 / n_azi) * torch.rand(n_azi).to(device)
     azi_ray = azi_ray + azi_randadd if random_azi else azi_ray
 
     # Elevation direction
     ele_ray = torch.linspace(
-        0, 1, n_ele+2)[1:-1].cuda() + (0.5 / n_ele) * torch.rand(n_ele).cuda() * 0
+        0, 1, n_ele+2)[1:-1].to(device) + (0.5 / n_ele) * torch.rand(n_ele).to(device) * 0
     ele_ray = torch.acos(2 * ele_ray - 1)
 
     # Combined direction
@@ -162,11 +162,11 @@ def directions(n_azi, n_ele, random_azi=True):
 
     dir = torch.cat((pts_x, pts_y, pts_z), dim=1)  # r     [n_azi * n_ele, 3]
     # [n_azi * n_ele + 2, 3]
-    dir = torch.cat((dir, torch.tensor([[0, 0, 1], [0, 0, -1]]).cuda()), dim=0)
+    dir = torch.cat((dir, torch.tensor([[0, 0, 1], [0, 0, -1]]).to(device)), dim=0)
     return dir, azi_ray, ele_ray
 
 
-def acoustic_render(attn, signal, r_vals):
+def acoustic_render(attn, signal, r_vals, device="cpu"):
     """acoustic volume rendering 
 
     Parameters
@@ -185,13 +185,13 @@ def acoustic_render(attn, signal, r_vals):
     bs, n_rays, n_samples, n_lenseq = signal.shape
 
     dists = r_vals[..., 1:] - r_vals[..., :-1]
-    dists = torch.cat([dists, torch.Tensor([1e10]).cuda().expand(
+    dists = torch.cat([dists, torch.Tensor([1e10]).to(device).expand(
         dists[..., :1].shape)], -1)  # [N_rays, N_samples]
     dists = dists.unsqueeze(0).repeat(n_rays, 1)
 
     alpha = raw2alpha(attn, dists.repeat(bs, 1, 1))  # [bs, N_rays, N_samples]
     att_i = torch.cumprod(torch.cat(
-        [torch.ones((alpha[..., :1].shape)).cuda(), 1.-alpha + 1e-6], -1), -1)[..., :-1]
+        [torch.ones((alpha[..., :1].shape)).to(device), 1.-alpha + 1e-6], -1), -1)[..., :-1]
 
     # [bs, N_rays, N_lenseq]
     n_rays_signal = torch.sum(signal*(att_i*alpha)[..., None], -2)

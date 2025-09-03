@@ -67,9 +67,9 @@ def get_expon_lr_func(
     return helper
 
 
-def strip_lowerdiag(L):
+def strip_lowerdiag(L, device="cpu"):
     uncertainty = torch.zeros(
-        (L.shape[0], 6), dtype=torch.float, device="cuda")
+        (L.shape[0], 6), dtype=torch.float, device=device)
 
     uncertainty[:, 0] = L[:, 0, 0]
     uncertainty[:, 1] = L[:, 0, 1]
@@ -80,17 +80,17 @@ def strip_lowerdiag(L):
     return uncertainty
 
 
-def strip_symmetric(sym):
-    return strip_lowerdiag(sym)
+def strip_symmetric(sym, device="cpu"):
+    return strip_lowerdiag(sym, device=device)
 
 
-def build_rotation(rot):
+def build_rotation(rot, device="cpu"):
 
     if rot.shape[-1] == 4:
 
         q = F.normalize(rot, dim=-1)
 
-        R = torch.zeros((q.size(0), 3, 3), device='cuda')
+        R = torch.zeros((q.size(0), 3, 3), device=device)
 
         r, x, y, z = q.unbind(-1)
 
@@ -115,7 +115,7 @@ def build_rotation(rot):
         a, b, c, d = q_l.unbind(-1)
         p, q, r, s = q_r.unbind(-1)
 
-        R = torch.zeros((rot.size(0), 4, 4), device='cuda')
+        R = torch.zeros((rot.size(0), 4, 4), device=device)
 
         R[..., 0, 0] = a*p + b*q + c*r + d*s
         R[..., 0, 1] = a*q - b*p - c*s + d*r
@@ -140,15 +140,15 @@ def build_rotation(rot):
     return R
 
 
-def build_scaling_rotation(s, r):
+def build_scaling_rotation(s, r, device="cpu"):
     L = torch.diag_embed(s)
-    R = build_rotation(r)
+    R = build_rotation(r, device)
 
     L = R @ L
     return L
 
 
-def safe_state(silent):
+def safe_state(silent, device="cpu"):
     old_f = sys.stdout
 
     class F:
@@ -170,7 +170,7 @@ def safe_state(silent):
     random.seed(0)
     np.random.seed(0)
     torch.manual_seed(0)
-    torch.cuda.set_device(torch.device("cuda:0"))
+    torch.cuda.set_device(device)
 
 
 def now():

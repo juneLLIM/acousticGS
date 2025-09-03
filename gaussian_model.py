@@ -26,7 +26,7 @@ class GaussianModel(nn.Module):
         def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation):
 
             L = build_scaling_rotation(
-                scaling_modifier * scaling, rotation)
+                scaling_modifier * scaling, rotation, device=self.device)
             covariance = L @ L.transpose(1, 2)
 
             return covariance
@@ -57,6 +57,7 @@ class GaussianModel(nn.Module):
         self.mean_gradient_accum = torch.empty(0)
         self.denom = torch.empty(0)
         self.optimizer = None
+        self.device = torch.device(config.device)
 
         self.gaussian_dim = config.model.gaussian_dim
         if self.gaussian_dim == 3:
@@ -198,36 +199,36 @@ class GaussianModel(nn.Module):
         count = self.config.model.initial_points
 
         if self.gaussian_dim == 3:
-            mean = torch.rand(count, 3, device="cuda") * 2 - 1
+            mean = torch.rand(count, 3, device=self.device) * 2 - 1
 
             # Initialize with small scales
-            scales = torch.ones((count, 3), device="cuda") * 0.01
+            scales = torch.ones((count, 3), device=self.device) * 0.01
 
             # Initialize as identity quaternions
-            rots = torch.zeros((count, 4), device="cuda")
+            rots = torch.zeros((count, 4), device=self.device)
             rots[:, 0] = 1
 
             self.t = torch.randint(
-                self.seq_len, (count,), device="cuda") / self.seq_len * 2 - 1
+                self.seq_len, (count,), device=self.device) / self.seq_len * 2 - 1
         else:
-            mean = torch.rand(count, 4, device="cuda") * 2 - 1
+            mean = torch.rand(count, 4, device=self.device) * 2 - 1
             # Initialize with small scales
-            scales = torch.ones((count, 4), device="cuda") * 0.01
+            scales = torch.ones((count, 4), device=self.device) * 0.01
 
             # Initialize as identity quaternions
-            rots = torch.zeros((count, 8), device="cuda")
+            rots = torch.zeros((count, 8), device=self.device)
             rots[:, 0] = 1
             rots[:, 4] = 1
 
         # Initialize SH feature for magnitude
         # DC component is initialized to 1.0, rest are 0.
         features = torch.zeros(
-            (count, (self.max_sh_degree + 1) ** 2), device="cuda")
+            (count, (self.max_sh_degree + 1) ** 2), device=self.device)
         features[:, 0] = 1.0
 
         # Initialize with low opacity
         opacities = self.inverse_opacity_activation(
-            0.1 * torch.ones((count, 1), dtype=torch.float, device="cuda"))
+            0.1 * torch.ones((count, 1), dtype=torch.float, device=self.device))
 
         self._mean = nn.Parameter(mean.requires_grad_(True))
         self._features_dc = nn.Parameter(features[:, 0:1].requires_grad_(True))
@@ -237,8 +238,8 @@ class GaussianModel(nn.Module):
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
 
-        self.mean_gradient_accum = torch.zeros((count, 1), device="cuda")
-        self.denom = torch.zeros((count, 1), device="cuda")
+        self.mean_gradient_accum = torch.zeros((count, 1), device=self.device)
+        self.denom = torch.zeros((count, 1), device=self.device)
 
         self.setup_optimizer()
 
@@ -380,13 +381,13 @@ class GaussianModel(nn.Module):
         self._rotation = optimizable_tensors["rotation"]
 
         self.mean_gradient_accum = torch.zeros(
-            (self.get_mean.shape[0], 1), device="cuda")
-        self.denom = torch.zeros((self.get_mean.shape[0], 1), device="cuda")
+            (self.get_mean.shape[0], 1), device=self.device)
+        self.denom = torch.zeros((self.get_mean.shape[0], 1), device=self.device)
 
     def densify_and_split(self, grads, N=2):
         n_init_points = self.get_mean.shape[0]
         # Extract points that satisfy the gradient condition
-        padded_grad = torch.zeros((n_init_points), device="cuda")
+        padded_grad = torch.zeros((n_init_points), device=self.device)
         padded_grad[:grads.shape[0]] = grads.squeeze()
         selected_pts_mask = torch.where(
             padded_grad >= self.config.densification.min_grad, True, False)
@@ -396,7 +397,7 @@ class GaussianModel(nn.Module):
         stds = self.get_scaling[selected_pts_mask].repeat(N, 1)
         means = torch.zeros_like(self.get_mean[selected_pts_mask].repeat(N, 1))
         rots = build_rotation(
-            self._rotation[selected_pts_mask]).repeat(N, 1, 1)
+            self._rotation[selected_pts_mask], device=self.device).repeat(N, 1, 1)
         samples = torch.normal(mean=means, std=stds)
         new_mean = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + \
             self.get_mean[selected_pts_mask].repeat(N, 1)
@@ -411,7 +412,7 @@ class GaussianModel(nn.Module):
             new_mean, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation)
 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(
-            N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
+            N * selected_pts_mask.sum(), device=self.device, dtype=bool)))
         self.prune_points(prune_filter)
 
     def densify_and_clone(self, grads):
@@ -487,7 +488,7 @@ class GaussianModel(nn.Module):
         l = torch.norm(d, dim=-1)  # (B, N)
 
         s = self.get_scaling
-        R = build_rotation(self._rotation)
+        R = build_rotation(self._rotation, device=self.device)
 
         J0 = d[..., 0] / (v * l)
         J1 = d[..., 1] / (v * l)
@@ -520,7 +521,7 @@ class GaussianModel(nn.Module):
         B = query_points.shape[0]
         N = self.get_mean.shape[0]
         if N == 0:
-            return torch.zeros(B, self.seq_len, device="cuda")
+            return torch.zeros(B, self.seq_len, device=self.device)
 
         opacity = self.get_opacity  # (N, 1)
         sh = self.eval_features(query_points)  # (B, N)
@@ -528,7 +529,7 @@ class GaussianModel(nn.Module):
         rasterized_mean, rasterized_var = self.rasterize(query_points)
 
         t_step = torch.linspace(-1., 1., self.seq_len,
-                                device="cuda")  # (seq_len)
+                                device=self.device)  # (seq_len)
         opacity = opacity.unsqueeze(0)  # (1, N, 1)
         sh = sh.unsqueeze(-1)  # (B, N, 1)
         rasterized_mean = rasterized_mean.unsqueeze(-1)  # (B, N, 1)

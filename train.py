@@ -31,6 +31,10 @@ def training(config):
     print("-----------------------------------------------")
     print("Project name: " + config.logging.project_name)
 
+    # Device setting
+    device = torch.device(config.device)
+    print(f"Using device: {device}")
+
     # Setup output directory
     output_dir = f'{config.path.output}/{now_str()}'
     print("Output folder: {}".format(output_dir))
@@ -94,10 +98,10 @@ def training(config):
         gt_time, position_rx, position_tx = batch
 
         # Render
-        pred_time = gaussians(position_rx.cuda())
+        pred_time = gaussians(position_rx.to(device))
 
         # Compute loss
-        loss_dict, gt_freq, pred_freq = criterion(pred_time, gt_time.cuda())
+        loss_dict, gt_freq, pred_freq = criterion(pred_time, gt_time.to(device))
         total_loss = loss_dict["total_loss"]
         total_loss.backward()
 
@@ -141,7 +145,7 @@ def training(config):
                 for batch in test_loader:
                     gt_time, position_rx, position_tx = batch
 
-                    pred_time = gaussians(position_rx.cuda())
+                    pred_time = gaussians(position_rx.to(device))
 
                     metrics = metric_cal(gt_time.detach().cpu().numpy(),
                                          pred_time.detach().cpu().numpy(), config.audio.fs)
@@ -161,9 +165,9 @@ def training(config):
 
                 # Compute first sample in testset
                 gt_time, position_rx, position_tx = next(iter(test_loader))
-                pred_time = gaussians(position_rx.cuda())
+                pred_time = gaussians(position_rx.to(device))
                 loss_dict, gt_freq, pred_freq = criterion(
-                    pred_time, gt_time.cuda())
+                    pred_time, gt_time.to(device))
 
                 # Saving path setup
                 vis_dir = os.path.join(output_dir, "test_vis")
@@ -208,7 +212,7 @@ def training(config):
 if __name__ == "__main__":
     config = load_config()
 
-    safe_state(silent=not config.logging.log)
+    safe_state(silent=not config.logging.log, device=torch.device(config.device))
     print()
 
     # Initialize WandB
