@@ -382,7 +382,8 @@ class GaussianModel(nn.Module):
 
         self.mean_gradient_accum = torch.zeros(
             (self.get_mean.shape[0], 1), device=self.device)
-        self.denom = torch.zeros((self.get_mean.shape[0], 1), device=self.device)
+        self.denom = torch.zeros(
+            (self.get_mean.shape[0], 1), device=self.device)
 
     def densify_and_split(self, grads, N=2):
         n_init_points = self.get_mean.shape[0]

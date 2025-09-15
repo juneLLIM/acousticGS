@@ -101,7 +101,8 @@ def training(config):
         pred_time = gaussians(position_rx.to(device))
 
         # Compute loss
-        loss_dict, gt_freq, pred_freq = criterion(pred_time, gt_time.to(device))
+        loss_dict, gt_freq, pred_freq = criterion(
+            pred_time, gt_time.to(device))
         total_loss = loss_dict["total_loss"]
         total_loss.backward()
 
@@ -212,7 +213,8 @@ def training(config):
 if __name__ == "__main__":
     config = load_config()
 
-    safe_state(silent=not config.logging.log, device=torch.device(config.device))
+    safe_state(silent=not config.logging.log,
+               device=torch.device(config.device))
     print()
 
     # Initialize WandB

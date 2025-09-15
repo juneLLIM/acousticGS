@@ -1,7 +1,7 @@
 # --- Default Configuration for Acoustic Gaussian Splatting ---
 
 # Device Setting
-device: "cuda"
+device: "cuda:0"
 
 # Data and Model Paths
 path:
