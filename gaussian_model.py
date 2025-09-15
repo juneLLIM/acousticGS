@@ -558,16 +558,16 @@ class GaussianModel(nn.Module):
     def denormalize_points(self, input_pts):
         return (input_pts + 1) / 2 * (self.config.rendering.coord_max - self.config.rendering.coord_min) + self.config.rendering.coord_min
 
-    def rasterize(self, query_points):
+    def project(self, query_points):
         """
-        Rasterizes gaussians to the given query points.
+        Projects gaussians to the given query points.
 
         Args:
             query_points (torch.Tensor): (B, 3) tensor of normalized query points.
 
         Returns:
-            rasterized_mean (torch.Tensor): (B, N) tensor of rasterized gaussian means.
-            rasterized_var (torch.Tensor): (B, N) tensor of rasterized gaussian variances.
+            projected_mean (torch.Tensor): (B, N) tensor of projected gaussian means.
+            projected_var (torch.Tensor): (B, N) tensor of projected gaussian variances.
         """
         mean = self.get_mean    # (N, 4)
 
@@ -593,10 +593,10 @@ class GaussianModel(nn.Module):
         std3 = (J0 * R[..., 0, 3] + J1 * R[..., 1, 3] +
                 J2 * R[..., 2, 3] + R[..., 3, 3]) * s[..., 3]
 
-        rasterized_mean = t + (l / v)  # (B, N)
-        rasterized_var = std0 ** 2 + std1 ** 2 + std2 ** 2 + std3 ** 2
+        projected_mean = t + (l / v)  # (B, N)
+        projected_var = std0 ** 2 + std1 ** 2 + std2 ** 2 + std3 ** 2
 
-        return rasterized_mean, rasterized_var
+        return projected_mean, projected_var
 
     def render_signal_at_points(self, query_points):
         """
@@ -616,17 +616,17 @@ class GaussianModel(nn.Module):
         opacity = self.get_opacity  # (N, 1)
         sh = self.eval_features(query_points)  # (B, N)
 
-        rasterized_mean, rasterized_var = self.rasterize(query_points)
+        projected_mean, projected_var = self.project(query_points)
 
         t_step = torch.linspace(-1., 1., self.seq_len,
                                 device=self.device)  # (seq_len)
         opacity = opacity.unsqueeze(0)  # (1, N, 1)
         sh = sh.unsqueeze(-1)  # (B, N, 1)
-        rasterized_mean = rasterized_mean.unsqueeze(-1)  # (B, N, 1)
-        rasterized_var = rasterized_var.unsqueeze(-1)  # (B, N, 1)
+        projected_mean = projected_mean.unsqueeze(-1)  # (B, N, 1)
+        projected_var = projected_var.unsqueeze(-1)  # (B, N, 1)
         t_step = t_step.unsqueeze(0).unsqueeze(0)  # (1, 1, seq_len)
 
-        power = torch.exp(-0.5*(t_step-rasterized_mean) ** 2 / rasterized_var)
+        power = torch.exp(-0.5*(t_step-projected_mean) ** 2 / projected_var)
         final_signal = (opacity * sh * power).sum(dim=1)  # (B, seq_len)
 
         return final_signal  # (B, seq_len)
