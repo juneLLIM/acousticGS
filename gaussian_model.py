@@ -194,6 +194,12 @@ class GaussianModel(nn.Module):
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
 
+    def initialize(self, position_tx=None):
+        if position_tx is not None and self.config.model.init_from_data is True:
+            self.create_from_simulation(position_tx)
+        else:
+            self.create_random()
+
     def create_random(self):
 
         count = self.config.model.initial_points
@@ -225,6 +231,88 @@ class GaussianModel(nn.Module):
         features = torch.zeros(
             (count, (self.max_sh_degree + 1) ** 2), device=self.device)
         features[:, 0] = 1.0
+
+        # Initialize with low opacity
+        opacities = self.inverse_opacity_activation(
+            0.1 * torch.ones((count, 1), dtype=torch.float, device=self.device))
+
+        self._mean = nn.Parameter(mean.requires_grad_(True))
+        self._features_dc = nn.Parameter(features[:, 0:1].requires_grad_(True))
+        self._features_rest = nn.Parameter(
+            features[:, 1:].requires_grad_(True))
+        self._scaling = nn.Parameter(scales.requires_grad_(True))
+        self._rotation = nn.Parameter(rots.requires_grad_(True))
+        self._opacity = nn.Parameter(opacities.requires_grad_(True))
+
+        self.mean_gradient_accum = torch.zeros((count, 1), device=self.device)
+        self.denom = torch.zeros((count, 1), device=self.device)
+
+        self.setup_optimizer()
+
+        print(f"Created {count} random gaussians.")
+
+    def create_from_simulation(self, position_tx):
+
+        import pyroomacoustics as pra
+        import time
+        import numpy as np
+
+        # Create initial points in a grid
+        count_sqrt = int(self.config.model.initial_points ** 0.5)
+        count = count_sqrt * count_sqrt
+        mean = torch.rand(count_sqrt, 3, device=self.device) * 2 - 1
+        t = torch.randint(self.seq_len, (count,), device=self.device)
+
+        # Simulate RIR at grid points
+        chrono = time.time()
+        width = self.config.rendering.coord_max - self.config.rendering.coord_min
+        room = pra.ShoeBox(
+            (width, width, width),
+            fs=self.config.audio.fs,
+            absorption=0.2,
+            air_absorption=True,
+            max_order=3,
+            ray_tracing=False,
+            use_rand_ism=True)
+        pos_src = position_tx - self.config.rendering.coord_min
+        room.add_source(pos_src)
+        room.add_microphone((mean.T.cpu() + 1) / 2 * width)
+        room.compute_rir()
+        print("Simulation done in", time.time() - chrono, "seconds.")
+
+        # Initialize SH feature for magnitude
+        # DC component is initialized to RIR results, rest are 0.
+        features = torch.zeros(
+            (count, (self.max_sh_degree + 1) ** 2), device=self.device)
+
+        features[:, 0] = torch.from_numpy(np.array(
+            [room.rir[i][0][t.cpu()[i * count_sqrt:(i+1)*count_sqrt]] for i in range(count_sqrt)])).flatten()
+
+        # Fix format
+        mean = mean.repeat_interleave(count_sqrt, dim=0)
+        t = t / self.seq_len * 2 - 1
+
+        if self.gaussian_dim == 3:
+            # Initialize with small scales
+            scales = torch.ones((count, 3), device=self.device) * 0.01
+
+            # Initialize as identity quaternions
+            rots = torch.zeros((count, 4), device=self.device)
+            rots[:, 0] = 1
+
+            # Initialize time
+            self.t = t
+        else:
+            # Initialize mean
+            mean = torch.cat((mean, t.unsqueeze(-1)), dim=1)
+
+            # Initialize with small scales
+            scales = torch.ones((count, 4), device=self.device) * 0.01
+
+            # Initialize as identity quaternions
+            rots = torch.zeros((count, 8), device=self.device)
+            rots[:, 0] = 1
+            rots[:, 4] = 1
 
         # Initialize with low opacity
         opacities = self.inverse_opacity_activation(

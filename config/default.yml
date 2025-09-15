@@ -34,6 +34,7 @@ model:
   gaussian_dim: 4
   sh_degree: 3
   initial_points: 10000
+  init_from_data: True
 
 # Rendering Parameters
 rendering:

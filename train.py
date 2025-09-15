@@ -70,7 +70,7 @@ def training(config):
         gaussians.restore(model_params)
     else:
         print("No checkpoint path provided, starting from scratch.")
-        gaussians.create_random()
+        gaussians.initialize(position_tx=train_dataset.positions_tx[0])
 
     print(f"-----------------------------------------------")
 
