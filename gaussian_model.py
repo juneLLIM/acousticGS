@@ -532,8 +532,9 @@ class GaussianModel(nn.Module):
         self.densify_and_clone(grads)
         self.densify_and_split(grads)
 
-        prune_mask = (self.get_opacity < min_opacity).squeeze() & (
-            self.get_scaling.max(dim=1).values < max_scale)
+        prune_mask = (self.get_opacity < min_opacity).squeeze() \
+            & (self.get_scaling.max(dim=1).values < max_scale) \
+            & ((self.get_mean > 1) | (self.get_mean < -1)).any(dim=1)
 
         self.prune_points(prune_mask)
 
