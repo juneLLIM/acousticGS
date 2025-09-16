@@ -595,8 +595,9 @@ class GaussianModel(nn.Module):
 
         projected_mean = t + (l / v)  # (B, N)
         projected_var = std0 ** 2 + std1 ** 2 + std2 ** 2 + std3 ** 2
+        decay = 1 / l
 
-        return projected_mean, projected_var
+        return projected_mean, projected_var, decay
 
     def render_signal_at_points(self, query_points):
         """
@@ -616,17 +617,20 @@ class GaussianModel(nn.Module):
         opacity = self.get_opacity  # (N, 1)
         sh = self.eval_features(query_points)  # (B, N)
 
-        projected_mean, projected_var = self.project(query_points)
+        projected_mean, projected_var, decay = self.project(query_points)
 
         t_step = torch.linspace(-1., 1., self.seq_len,
                                 device=self.device)  # (seq_len)
+
         opacity = opacity.unsqueeze(0)  # (1, N, 1)
         sh = sh.unsqueeze(-1)  # (B, N, 1)
+        decay = decay.unsqueeze(-1)  # (B, N, 1)
         projected_mean = projected_mean.unsqueeze(-1)  # (B, N, 1)
         projected_var = projected_var.unsqueeze(-1)  # (B, N, 1)
         t_step = t_step.unsqueeze(0).unsqueeze(0)  # (1, 1, seq_len)
 
         power = torch.exp(-0.5*(t_step-projected_mean) ** 2 / projected_var)
-        final_signal = (opacity * sh * power).sum(dim=1)  # (B, seq_len)
+        final_signal = (
+            opacity * sh * decay * power).sum(dim=1)  # (B, seq_len)
 
         return final_signal  # (B, seq_len)
