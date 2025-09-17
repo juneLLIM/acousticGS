@@ -208,8 +208,7 @@ class GaussianModel(nn.Module):
             mean = torch.rand(count, 3, device=self.device) * 2 - 1
 
             # Initialize with small scales
-            scales = torch.ones((count, 3), device=self.device) * 0.01
-
+            scales = torch.full((count, 3), 0.01, device=self.device).log()
             # Initialize as identity quaternions
             rots = torch.zeros((count, 4), device=self.device)
             rots[:, 0] = 1
@@ -219,7 +218,7 @@ class GaussianModel(nn.Module):
         else:
             mean = torch.rand(count, 4, device=self.device) * 2 - 1
             # Initialize with small scales
-            scales = torch.ones((count, 4), device=self.device) * 0.01
+            scales = torch.full((count, 4), 0.01, device=self.device).log()
 
             # Initialize as identity quaternions
             rots = torch.zeros((count, 8), device=self.device)
@@ -294,7 +293,7 @@ class GaussianModel(nn.Module):
 
         if self.gaussian_dim == 3:
             # Initialize with small scales
-            scales = torch.ones((count, 3), device=self.device) * 0.01
+            scales = torch.full((count, 3), 0.01, device=self.device).log()
 
             # Initialize as identity quaternions
             rots = torch.zeros((count, 4), device=self.device)
@@ -307,7 +306,7 @@ class GaussianModel(nn.Module):
             mean = torch.cat((mean, t.unsqueeze(-1)), dim=1)
 
             # Initialize with small scales
-            scales = torch.ones((count, 4), device=self.device) * 0.01
+            scales = torch.full((count, 4), 0.01, device=self.device).log()
 
             # Initialize as identity quaternions
             rots = torch.zeros((count, 8), device=self.device)
