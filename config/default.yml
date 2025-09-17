@@ -79,5 +79,6 @@ densification:
   opacity_reset_interval: 3000
   min_grad: 0.0002
   min_opacity: 0.005
-  max_scale: 0.01
+  min_scale: 0.0001
+  max_scale: 0.1
   threshold_scale: 0.001
