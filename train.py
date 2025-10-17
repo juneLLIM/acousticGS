@@ -104,12 +104,9 @@ def training(config):
         loss_dict, gt_freq, pred_freq = criterion(
             pred_time, gt_time.to(device))
         total_loss = loss_dict["total_loss"]
-        total_loss.backward()
+        gaussians.backward(total_loss)
 
         iter_end.record()
-
-        gaussians.add_densification_stats(
-            update_filter=torch.ones(gaussians.get_mean.shape[0], dtype=bool))  # tmp -> fix after culling
 
         with torch.no_grad():
 

@@ -75,6 +75,10 @@ class GaussianModel(nn.Module):
         query_points = self.normalize_points(position_rx)
         return self.render_signal_at_points(query_points)
 
+    def backward(self, total_loss):
+        total_loss.backward()
+        self.add_densification_stats(self.update_filter)
+
     def capture(self):
         if self.gaussian_dim == 3:
             return (
