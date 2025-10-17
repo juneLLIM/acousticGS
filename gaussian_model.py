@@ -12,6 +12,7 @@
 import torch
 from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation, build_scaling_rotation
 from torch import nn
+import torch.nn.functional as F
 from utils.sh_utils import eval_sh
 
 try:
@@ -166,29 +167,19 @@ class GaussianModel(nn.Module):
     def get_covariance(self, scaling_modifier=1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
 
-    def eval_features(self, query_points):
-
-        # query_points: (B, 3)
-        B = query_points.shape[0]
-        N = self.get_mean.shape[0]
-
-        # Pre-fetch gaussian features
-        mean = self.get_mean[:, :3]    # (N, 3)
-        sh = self.get_features  # (N, C)
-
-        dir_pp = query_points.unsqueeze(1) - mean    # (B, N, 3)
+    def eval_features(self, sh, dir_pp):
 
         dir_pp_normalized = dir_pp / \
-            (torch.norm(dir_pp, dim=-1, keepdim=True) + 1e-8)   # (B, N, 3)
+            (torch.norm(dir_pp, dim=-1, keepdim=True) + 1e-8)   # (K, 3)
 
-        # Evaluate spherical harmonics (B, N, C)
+        # Evaluate spherical harmonics
         features = eval_sh(
             self.active_sh_degree,
-            sh.repeat(B, 1, 1).unsqueeze(-2),  # (B, N, 1, C)
-            dir_pp_normalized  # (B, N, 3)
+            sh.unsqueeze(1),  # (K, 1, C)
+            dir_pp_normalized  # (K, 3)
         )
 
-        return features.squeeze(-1)  # (B, N)
+        return features.squeeze(-1)  # (K)
 
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
@@ -577,9 +568,36 @@ class GaussianModel(nn.Module):
 
         d = query_points.unsqueeze(1) - mean[:, :3].unsqueeze(0)  # (B, N, 3)
         l = torch.norm(d, dim=-1)  # (B, N)
+        s = self.get_scaling    # (N, 4) or (N, 3)
 
-        s = self.get_scaling
-        R = build_rotation(self._rotation, device=self.device)
+        # 4d space culling
+        # Only applied far-field culling instead of conic culling
+        # Ignorable since speed of sound is much faster than spatial distance
+        with torch.no_grad():
+            dist_mask = l + \
+                s.max(dim=1)[0] < self.config.rendering.cull_distance
+            if not dist_mask.any():
+                return [torch.empty(0, device=self.device)] * 5
+            b_idx, n_idx = dist_mask.nonzero(as_tuple=True)
+
+            # Sort by distance within each batch
+            _, b_cnt = torch.unique_consecutive(b_idx, return_counts=True)
+
+            sorted_l_indices = torch.cat([
+                torch.argsort(l_split) + offset for l_split, offset
+                in zip(l[b_idx, n_idx].split(b_cnt.tolist()), F.pad(b_cnt[:-1], (1, 0)).cumsum(0))
+            ])
+
+        # Apply culling with l sorted
+        b_idx = b_idx[sorted_l_indices]
+        n_idx = n_idx[sorted_l_indices]
+        t = t[n_idx]
+        d = d[b_idx, n_idx, :]
+        l = l[b_idx, n_idx]
+        s = s[n_idx, :]
+
+        # Projection
+        R = build_rotation(self._rotation[n_idx], device=self.device)
 
         J0 = d[..., 0] / (v * l)
         J1 = d[..., 1] / (v * l)
@@ -594,11 +612,10 @@ class GaussianModel(nn.Module):
         std3 = (J0 * R[..., 0, 3] + J1 * R[..., 1, 3] +
                 J2 * R[..., 2, 3] + R[..., 3, 3]) * s[..., 3]
 
-        projected_mean = t + (l / v)  # (B, N)
+        projected_mean = t + (l / v)  # (K)
         projected_var = std0 ** 2 + std1 ** 2 + std2 ** 2 + std3 ** 2
-        decay = 1 / l
 
-        return projected_mean, projected_var, decay
+        return projected_mean, projected_var, d, b_idx, n_idx
 
     def render_signal_at_points(self, query_points):
         """
@@ -612,26 +629,105 @@ class GaussianModel(nn.Module):
         """
         B = query_points.shape[0]
         N = self.get_mean.shape[0]
+        L = self.seq_len
+        final_signal = torch.zeros(B, L, requires_grad=True).to(self.device)
         if N == 0:
-            return torch.zeros(B, self.seq_len, device=self.device)
+            return final_signal
 
-        opacity = self.get_opacity  # (N, 1)
-        sh = self.eval_features(query_points)  # (B, N)
+        # Project gaussians
+        projected_mean, projected_var, d, b_idx, n_idx = self.project(
+            query_points)
 
-        projected_mean, projected_var, decay = self.project(query_points)
+        # Time bin
+        t_pts = torch.linspace(-1., 1., L, device=self.device)  # (seq_len)
+        t_bin = t_pts[1] - t_pts[0]
 
-        t_step = torch.linspace(-1., 1., self.seq_len,
-                                device=self.device)  # (seq_len)
+        # Check gaussian overlay (3*sigma) per time bin
+        with torch.no_grad():
+            std = torch.sqrt(projected_var)
+            lower_bound = (projected_mean - 3 * std).unsqueeze(-1)
+            upper_bound = (projected_mean + 3 * std).unsqueeze(-1)
+            time_mask = torch.min(upper_bound, t_pts + t_bin / 2) - \
+                torch.max(lower_bound, t_pts - t_bin / 2) > 0
 
-        opacity = opacity.unsqueeze(0)  # (1, N, 1)
-        sh = sh.unsqueeze(-1)  # (B, N, 1)
-        decay = decay.unsqueeze(-1)  # (B, N, 1)
-        projected_mean = projected_mean.unsqueeze(-1)  # (B, N, 1)
-        projected_var = projected_var.unsqueeze(-1)  # (B, N, 1)
-        t_step = t_step.unsqueeze(0).unsqueeze(0)  # (1, 1, seq_len)
+            if not time_mask.any():
+                return final_signal
 
-        power = torch.exp(-0.5*(t_step-projected_mean) ** 2 / projected_var)
-        final_signal = (
-            opacity * sh * decay * power).sum(dim=1)  # (B, seq_len)
+            t_idx, idx = time_mask.T.nonzero(as_tuple=True)
+
+        # Apply time bin culling
+        t_pts = t_pts[t_idx]  # (K)
+        b_idx = b_idx[idx]  # (K)
+        n_idx = n_idx[idx]  # (K)
+        projected_mean = projected_mean[idx]  # (K)
+        projected_var = projected_var[idx]  # (K)
+        opacity = self.get_opacity[n_idx].squeeze(-1)  # (K)
+        d = d[idx]  # (K, 3)
+
+        # Calculate gaussian power
+        power = torch.exp(-0.5 * (t_pts - projected_mean)
+                          ** 2 / projected_var)  # (K)
+
+        # Calculate alpha
+        alpha = opacity * power  # (K)
+
+        # Alpha culling
+        with torch.no_grad():
+            alpha_mask = alpha > 1/255
+            if not alpha_mask.any():
+                return final_signal
+
+        alpha = alpha[alpha_mask]
+        b_idx = b_idx[alpha_mask]
+        n_idx = n_idx[alpha_mask]
+        t_idx = t_idx[alpha_mask]
+        d = d[alpha_mask]
+
+        # Index reference
+        with torch.no_grad():
+            bt_idx = b_idx * L + t_idx
+            _, counts = torch.unique_consecutive(bt_idx, return_counts=True)
+
+            inv_indices = torch.repeat_interleave(
+                torch.arange(len(counts), device=self.device), counts)
+            idx_starts = F.pad(torch.cumsum(counts, dim=0)[:-1], (1, 0))
+
+        # Calculate log transmittance
+        log_alpha = torch.log(1.0 - alpha + 1e-10)
+        log_transmittance = torch.cumsum(log_alpha, dim=0)
+        log_transmittance = log_transmittance - log_transmittance[inv_indices]
+        log_transmittance = F.pad(log_transmittance[:-1], (1, 0))
+        log_transmittance[idx_starts] = 0.0
+
+        # Transmittance culling
+        with torch.no_grad():
+            transmittance_mask = log_transmittance > torch.tensor(
+                0.0001, device=self.device).log()
+            if not transmittance_mask.any():
+                return final_signal
+
+        # Apply transmittance culling
+        alpha = alpha[transmittance_mask]
+        n_idx = n_idx[transmittance_mask]
+        bt_idx = bt_idx[transmittance_mask]
+        log_transmittance = log_transmittance[transmittance_mask]
+        d = d[transmittance_mask]
+
+        decay = 1/torch.norm(d, dim=-1)
+        sh = self.eval_features(self.get_features[n_idx], d)
+        transmittance = torch.exp(log_transmittance)
+
+        # Calculate final contribution
+        contribution = decay * sh * transmittance * alpha
+
+        # Accumulate contributions to the final signal
+        final_signal.view(-1).index_add_(0, bt_idx, contribution)
+
+        # Archive update filter for densification
+        with torch.no_grad():
+            update_filter = torch.zeros(
+                self.get_mean.shape[0], dtype=torch.bool, device=self.device)
+            update_filter[torch.unique(n_idx)] = True
+            self.update_filter = update_filter
 
         return final_signal  # (B, seq_len)

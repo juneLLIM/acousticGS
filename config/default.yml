@@ -42,6 +42,7 @@ rendering:
   coord_max:  6
   speed: 343.8
   pathloss: 1.5
+  cull_distance: 1
 
 # Audio Processing Parameters
 audio:
