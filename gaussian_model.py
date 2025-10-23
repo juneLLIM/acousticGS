@@ -221,10 +221,10 @@ class GaussianModel(nn.Module):
             rots[:, 4] = 1
 
         # Initialize SH feature for magnitude
-        # DC component is initialized to 1.0, rest are 0.
+        # DC component is initialized to random value between [-0.1,0.1], rest are 0.
         features = torch.zeros(
             (count, (self.max_sh_degree + 1) ** 2), device=self.device)
-        features[:, 0] = 1.0
+        features[:, 0] = torch.rand((count,), device=self.device) * 0.2 - 0.1
 
         # Initialize with low opacity
         opacities = self.inverse_opacity_activation(
