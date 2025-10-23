@@ -82,6 +82,29 @@ def training(config):
     print("Training start...")
     progress_bar = tqdm(range(first_iter, config.training.total_iterations),
                         desc="Training progress")
+
+    # Compute first sample in testset
+    gt_time, position_rx, position_tx = next(iter(test_loader))
+    pred_time = gaussians(position_rx.to(device))
+    loss_dict, gt_freq, pred_freq = criterion(
+        pred_time, gt_time.to(device))
+
+    # Saving path setup
+    vis_dir = os.path.join(output_dir, "test_vis")
+    os.makedirs(vis_dir, exist_ok=True)
+
+    # Call plotting function
+    plot_and_save_figure(
+        pred_freq=pred_freq[0, :],
+        gt_freq=gt_freq[0, :],
+        pred_time=pred_time[0, :],
+        gt_time=gt_time[0, :],
+        position_rx=position_rx[0, :],
+        position_tx=position_tx[0, :],
+        mode_set="test",
+        save_path=os.path.join(vis_dir, f"iter_0.png")
+    )
+
     for iteration, batch in enumerate(train_loader, start=first_iter+1):
         if iteration > config.training.total_iterations:
             break
@@ -167,11 +190,6 @@ def training(config):
                 loss_dict, gt_freq, pred_freq = criterion(
                     pred_time, gt_time.to(device))
 
-                # Saving path setup
-                vis_dir = os.path.join(output_dir, "test_vis")
-                os.makedirs(vis_dir, exist_ok=True)
-                save_path = os.path.join(vis_dir, f"iter_{iteration}.png")
-
                 # Call plotting function
                 plot_and_save_figure(
                     pred_freq=pred_freq[0, :],
@@ -181,7 +199,7 @@ def training(config):
                     position_rx=position_rx[0, :],
                     position_tx=position_tx[0, :],
                     mode_set="test",
-                    save_path=save_path
+                    save_path=os.path.join(vis_dir, f"iter_{iteration}.png")
                 )
 
                 # # Visualize the 3D Gaussian distribution
