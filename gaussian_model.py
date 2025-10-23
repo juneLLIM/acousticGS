@@ -279,7 +279,7 @@ class GaussianModel(nn.Module):
         features = torch.zeros(
             (count, (self.max_sh_degree + 1) ** 2), device=self.device)
 
-        features[:, 0] = torch.from_numpy(np.array(
+        features[:, 0] = 10 * torch.from_numpy(np.array(
             [room.rir[i][0][t.cpu()[i * count_sqrt:(i+1)*count_sqrt]] for i in range(count_sqrt)])).flatten()
 
         # Fix format
