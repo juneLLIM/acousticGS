@@ -69,7 +69,6 @@ class GaussianModel(nn.Module):
         else:
             raise ValueError("Invalid Gaussian dimension")
 
-        self.feature_dim = 1
         self.setup_functions()
 
     def forward(self, position_rx, network_view=None, position_tx=None):
@@ -155,7 +154,7 @@ class GaussianModel(nn.Module):
     def get_features(self):
         features_dc = self._features_dc
         features_rest = self._features_rest
-        return torch.cat((features_dc, features_rest), dim=-1)
+        return torch.cat((features_dc, features_rest), dim=1)
 
     @property
     def get_features_dc(self):
@@ -180,11 +179,11 @@ class GaussianModel(nn.Module):
         # Evaluate spherical harmonics
         features = eval_sh(
             self.active_sh_degree,
-            sh,  # (K, F, deg+1**2)
+            sh.unsqueeze(1),  # (K, 1, C)
             dir_pp_normalized  # (K, 3)
         )
 
-        return features  # (K, F)
+        return features.squeeze(-1)  # (K)
 
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
@@ -224,19 +223,17 @@ class GaussianModel(nn.Module):
         # Initialize SH feature for magnitude
         # DC component is initialized to random value between [-0.1,0.1], rest are 0.
         features = torch.zeros(
-            (count, self.feature_dim, (self.max_sh_degree + 1) ** 2), device=self.device)
-        features[..., 0] = torch.rand(
-            (count, self.feature_dim,), device=self.device) * 0.2 - 0.1
+            (count, (self.max_sh_degree + 1) ** 2), device=self.device)
+        features[:, 0] = torch.rand((count,), device=self.device) * 0.2 - 0.1
 
         # Initialize with low opacity
         opacities = self.inverse_opacity_activation(
             0.1 * torch.ones((count, 1), dtype=torch.float, device=self.device))
 
         self._mean = nn.Parameter(mean.requires_grad_(True))
-        self._features_dc = nn.Parameter(
-            features[..., 0:1].requires_grad_(True))
+        self._features_dc = nn.Parameter(features[:, 0:1].requires_grad_(True))
         self._features_rest = nn.Parameter(
-            features[..., 1:].requires_grad_(True))
+            features[:, 1:].requires_grad_(True))
         self._scaling = nn.Parameter(scales.requires_grad_(True))
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
@@ -280,9 +277,9 @@ class GaussianModel(nn.Module):
         # Initialize SH feature for magnitude
         # DC component is initialized to RIR results, rest are 0.
         features = torch.zeros(
-            (count, self.feature_dim, (self.max_sh_degree + 1) ** 2), device=self.device)
+            (count, (self.max_sh_degree + 1) ** 2), device=self.device)
 
-        features[..., 0] = 10 * torch.from_numpy(np.array(
+        features[:, 0] = 10 * torch.from_numpy(np.array(
             [room.rir[i][0][t.cpu()[i * count_sqrt:(i+1)*count_sqrt]] for i in range(count_sqrt)])).flatten()
 
         # Fix format
@@ -316,10 +313,9 @@ class GaussianModel(nn.Module):
             0.1 * torch.ones((count, 1), dtype=torch.float, device=self.device))
 
         self._mean = nn.Parameter(mean.requires_grad_(True))
-        self._features_dc = nn.Parameter(
-            features[..., 0:1].requires_grad_(True))
+        self._features_dc = nn.Parameter(features[:, 0:1].requires_grad_(True))
         self._features_rest = nn.Parameter(
-            features[..., 1:].requires_grad_(True))
+            features[:, 1:].requires_grad_(True))
         self._scaling = nn.Parameter(scales.requires_grad_(True))
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
@@ -491,9 +487,8 @@ class GaussianModel(nn.Module):
         new_scaling = self.scaling_inverse_activation(
             self.get_scaling[selected_pts_mask].repeat(N, 1) / (0.8*N))
         new_rotation = self._rotation[selected_pts_mask].repeat(N, 1)
-        new_features_dc = self._features_dc[selected_pts_mask].repeat(N, 1, 1)
-        new_features_rest = self._features_rest[selected_pts_mask].repeat(
-            N, 1, 1)
+        new_features_dc = self._features_dc[selected_pts_mask].repeat(N, 1)
+        new_features_rest = self._features_rest[selected_pts_mask].repeat(N, 1)
         new_opacity = self._opacity[selected_pts_mask].repeat(N, 1)
 
         self.densification_postfix(
