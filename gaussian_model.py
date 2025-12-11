@@ -695,13 +695,13 @@ class GaussianModel(nn.Module):
             inv_indices = torch.repeat_interleave(
                 torch.arange(len(counts), device=self.device), counts)
             idx_starts = F.pad(torch.cumsum(counts, dim=0)[:-1], (1, 0))
+            inv_starts = torch.repeat_interleave(idx_starts, counts)
+
 
         # Calculate log transmittance
         log_alpha = torch.log(1.0 - alpha + 1e-10)
         log_transmittance = torch.cumsum(log_alpha, dim=0)
-        log_transmittance = log_transmittance - log_transmittance[inv_indices]
-        log_transmittance = F.pad(log_transmittance[:-1], (1, 0))
-        log_transmittance[idx_starts] = 0.0
+        log_transmittance = log_transmittance - log_transmittance[inv_starts]
 
         # Transmittance culling
         with torch.no_grad():
