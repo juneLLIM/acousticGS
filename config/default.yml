@@ -13,7 +13,7 @@ path:
 # Logging Settings
 logging:
   project_name: "acoustic-gaussian-splatting"
-  log: True # Enable logging
+  log: True # Enable terminal logging
   wandb: True
   log_freq: 10
   test_freq: 100
