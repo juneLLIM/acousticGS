@@ -9,6 +9,7 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+from functools import partial
 import torch
 from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation, build_scaling_rotation
 from torch import nn
@@ -42,6 +43,9 @@ class GaussianModel(nn.Module):
 
         self.rotation_activation = torch.nn.functional.normalize
 
+        self.stft = partial(
+            torch.stft, n_fft=self.config.audio.n_fft, return_complex=True, hop_length=self.config.audio.hop_length, window=torch.hann_window(self.config.audio.n_fft, device=self.device))
+
     def __init__(self, config):
         super().__init__()
 
@@ -60,16 +64,31 @@ class GaussianModel(nn.Module):
         self.optimizer = None
         self.device = torch.device(config.device)
 
-        self.gaussian_dim = config.model.gaussian_dim
-        if self.gaussian_dim == 3:
+        self.gaussian_version = config.model.gaussian_version
+        if self.gaussian_version == 1:
+            self.gaussian_dim = 3
             self.t = torch.empty(0)
-            print("3D Gaussian model selected")
-        elif self.gaussian_dim == 4:
-            print("4D Gaussian model selected")
+            self.f = torch.empty(0)
+            print("3D Gaussian model with xyz axis selected")
+        elif self.gaussian_version == 2:
+            self.gaussian_dim = 4
+            self.f = torch.empty(0)
+            print("4D Gaussian model with xyzt axis selected")
+        elif self.gaussian_version == 3:
+            self.gaussian_dim = 4
+            self.t = torch.empty(0)
+            print("4D Gaussian model with xyzf axis selected")
+        elif self.gaussian_version == 4:
+            self.gaussian_dim = 5
+            print("5D Gaussian model with xyzft axis selected")
         else:
-            raise ValueError("Invalid Gaussian dimension")
+            raise ValueError("Invalid Gaussian version selected.")
 
         self.setup_functions()
+
+        dummy_input = torch.randn(1, self.seq_len, device=self.device)
+        dummy_stft = self.stft(dummy_input)
+        _, self.f_len, self.t_len = dummy_stft.shape
 
     def forward(self, position_rx, network_view=None, position_tx=None):
         query_points = self.normalize_points(position_rx)
@@ -80,58 +99,48 @@ class GaussianModel(nn.Module):
         self.add_densification_stats(self.update_filter)
 
     def capture(self):
-        if self.gaussian_dim == 3:
-            return (
-                self.active_sh_degree,
-                self._mean,
-                self._features_dc,
-                self._features_rest,
-                self._scaling,
-                self._rotation,
-                self._opacity,
-                self.mean_gradient_accum,
-                self.denom,
-                self.optimizer.state_dict(),
-                self.t
-            )
-        elif self.gaussian_dim == 4:
-            return (
-                self.active_sh_degree,
-                self._mean,
-                self._features_dc,
-                self._features_rest,
-                self._scaling,
-                self._rotation,
-                self._opacity,
-                self.mean_gradient_accum,
-                self.denom,
-                self.optimizer.state_dict(),
-            )
+        model_data = [
+            self.active_sh_degree,
+            self._mean,
+            self._features_dc,
+            self._features_rest,
+            self._scaling,
+            self._rotation,
+            self._opacity,
+            self.mean_gradient_accum,
+            self.denom,
+            self.optimizer.state_dict(),
+        ]
+
+        if self.gaussian_version == 1:
+            model_data.extend([self.t, self.f])
+        elif self.gaussian_version == 2:
+            model_data.append(self.f)
+        elif self.gaussian_version == 3:
+            model_data.append(self.t)
+
+        return tuple(model_data)
 
     def restore(self, model_args):
-        if self.gaussian_dim == 3:
-            (self.active_sh_degree,
-             self._mean,
-             self._features_dc,
-             self._features_rest,
-             self._scaling,
-             self._rotation,
-             self._opacity,
-             self.mean_gradient_accum,
-             self.denom,
-             opt_dict,
-             self.t) = model_args
-        elif self.gaussian_dim == 4:
-            (self.active_sh_degree,
-             self._mean,
-             self._features_dc,
-             self._features_rest,
-             self._scaling,
-             self._rotation,
-             self._opacity,
-             self.mean_gradient_accum,
-             self.denom,
-             opt_dict,) = model_args
+        (self.active_sh_degree,
+         self._mean,
+         self._features_dc,
+         self._features_rest,
+         self._scaling,
+         self._rotation,
+         self._opacity,
+         self.mean_gradient_accum,
+         self.denom,
+         opt_dict) = model_args[:10]
+
+        extra_args = model_args[10:]
+        if self.gaussian_version == 1:
+            self.t, self.f = extra_args
+        elif self.gaussian_version == 2:
+            self.f = extra_args[0]
+        elif self.gaussian_version == 3:
+            self.t = extra_args[0]
+
         self.setup_optimizer()
         self.optimizer.load_state_dict(opt_dict)
 
@@ -143,8 +152,10 @@ class GaussianModel(nn.Module):
     def get_rotation(self):
         if self.gaussian_dim == 3:
             return self.rotation_activation(self._rotation)
-        else:
+        elif self.gaussian_dim == 4:
             return self.rotation_activation(self._rotation.view(-1, 4, 2)).view(-1, 8)
+        elif self.gaussian_dim == 5:
+            return NotImplementedError
 
     @property
     def get_mean(self):
@@ -199,32 +210,45 @@ class GaussianModel(nn.Module):
 
         count = self.config.model.initial_points
 
+        # Initialize mean, scaling(small scales), rotation(identity quaternions)
         if self.gaussian_dim == 3:
             mean = torch.rand(count, 3, device=self.device) * 2 - 1
-
-            # Initialize with small scales
             scales = torch.full((count, 3), 0.01, device=self.device).log()
-            # Initialize as identity quaternions
             rots = torch.zeros((count, 4), device=self.device)
             rots[:, 0] = 1
-
-            self.t = torch.randint(
-                self.seq_len, (count,), device=self.device) / self.seq_len * 2 - 1
-        else:
+        elif self.gaussian_dim == 4:
             mean = torch.rand(count, 4, device=self.device) * 2 - 1
-            # Initialize with small scales
             scales = torch.full((count, 4), 0.01, device=self.device).log()
-
-            # Initialize as identity quaternions
             rots = torch.zeros((count, 8), device=self.device)
             rots[:, 0] = 1
             rots[:, 4] = 1
+        else:
+            raise NotImplementedError
 
-        # Initialize SH feature for magnitude
-        # DC component is initialized to random value between [-0.1,0.1], rest are 0.
+        # Initialize time and frequency
+        if self.gaussian_version == 1:
+            self.t = torch.randint(
+                self.t_len, (count,), device=self.device) / self.t_len * 2 - 1
+            self.f = torch.randint(
+                self.f_len, (count,), device=self.device) / self.f_len * 2 - 1
+        elif self.gaussian_version == 2:
+            self.f = torch.randint(
+                self.f_len, (count,), device=self.device) / self.f_len * 2 - 1
+        elif self.gaussian_version == 3:
+            self.t = torch.randint(
+                self.t_len, (count,), device=self.device) / self.t_len * 2 - 1
+        elif self.gaussian_version == 4:
+            pass
+
+        # Initialize SH feature to stft values
+        # DC component is initialized to random magnitude in [0,1), and phase in [-pi,pi), rest are 0.
         features = torch.zeros(
-            (count, (self.max_sh_degree + 1) ** 2), device=self.device)
-        features[:, 0] = torch.rand((count,), device=self.device) * 0.2 - 0.1
+            (count, (self.max_sh_degree + 1) ** 2), device=self.device, dtype=torch.complex64)
+        magnitudes = torch.rand((count,), device=self.device)
+        phases = (torch.rand((count,), device=self.device) * 2 - 1) * torch.pi
+        real = magnitudes * torch.cos(phases)
+        imag = magnitudes * torch.sin(phases)
+        features[:, 0] = torch.complex(real, imag)
 
         # Initialize with low opacity
         opacities = self.inverse_opacity_activation(
@@ -255,7 +279,8 @@ class GaussianModel(nn.Module):
         count_sqrt = int(self.config.model.initial_points ** 0.5)
         count = count_sqrt * count_sqrt
         mean = torch.rand(count_sqrt, 3, device=self.device) * 2 - 1
-        t = torch.randint(self.seq_len, (count,), device=self.device)
+        t = torch.randint(self.t_len, (count,), device=self.device)
+        f = torch.randint(self.f_len, (count,), device=self.device)
 
         # Simulate RIR at grid points
         chrono = time.time()
@@ -274,39 +299,49 @@ class GaussianModel(nn.Module):
         room.compute_rir()
         print("Simulation done in", time.time() - chrono, "seconds.")
 
-        # Initialize SH feature for magnitude
+        # Initialize SH feature to stft values
         # DC component is initialized to RIR results, rest are 0.
-        features = torch.zeros(
-            (count, (self.max_sh_degree + 1) ** 2), device=self.device)
+        signals = torch.from_numpy(
+            np.array([rir[0][:self.seq_len] for rir in room.rir])).to(device=self.device)
+        idx = torch.arange(
+            count_sqrt, device=self.device).repeat_interleave(count_sqrt)
+        stft = self.stft(signals)[idx, f, t]
 
-        features[:, 0] = 10 * torch.from_numpy(np.array(
-            [room.rir[i][0][t.cpu()[i * count_sqrt:(i+1)*count_sqrt]] for i in range(count_sqrt)])).flatten()
+        features = torch.zeros(
+            (count, (self.max_sh_degree + 1) ** 2), device=self.device, dtype=torch.complex64)
+
+        features[:, 0] = stft
 
         # Fix format
         mean = mean.repeat_interleave(count_sqrt, dim=0)
-        t = t / self.seq_len * 2 - 1
+        t = t / self.t_len * 2 - 1
+        f = f / self.f_len * 2 - 1
 
+        # Initialize scaling(small scales) and rotation(identity quaternions)
         if self.gaussian_dim == 3:
-            # Initialize with small scales
             scales = torch.full((count, 3), 0.01, device=self.device).log()
-
-            # Initialize as identity quaternions
             rots = torch.zeros((count, 4), device=self.device)
             rots[:, 0] = 1
-
-            # Initialize time
-            self.t = t
-        else:
-            # Initialize mean
-            mean = torch.cat((mean, t.unsqueeze(-1)), dim=1)
-
-            # Initialize with small scales
+        elif self.gaussian_dim == 4:
             scales = torch.full((count, 4), 0.01, device=self.device).log()
-
-            # Initialize as identity quaternions
             rots = torch.zeros((count, 8), device=self.device)
             rots[:, 0] = 1
             rots[:, 4] = 1
+        else:
+            raise NotImplementedError
+
+        # Initialize mean, time, and frequency
+        if self.gaussian_version == 1:
+            self.t = t
+            self.f = f
+        elif self.gaussian_version == 2:
+            mean = torch.cat((mean, t.unsqueeze(-1)), dim=1)
+            self.f = f
+        elif self.gaussian_version == 3:
+            mean = torch.cat((mean, f.unsqueeze(-1)), dim=1)
+            self.t = t
+        elif self.gaussian_version == 4:
+            mean = torch.cat((mean, t.unsqueeze(-1), f.unsqueeze(-1)), dim=1)
 
         # Initialize with low opacity
         opacities = self.inverse_opacity_activation(
@@ -424,6 +459,14 @@ class GaussianModel(nn.Module):
         self.mean_gradient_accum = self.mean_gradient_accum[valid_points_mask]
         self.denom = self.denom[valid_points_mask]
 
+        if self.gaussian_version == 1:
+            self.t = self.t[valid_points_mask]
+            self.f = self.f[valid_points_mask]
+        elif self.gaussian_version == 2:
+            self.f = self.f[valid_points_mask]
+        elif self.gaussian_version == 3:
+            self.t = self.t[valid_points_mask]
+
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
@@ -446,7 +489,7 @@ class GaussianModel(nn.Module):
                 optimizable_tensors[group["name"]] = group["params"][0]
         return optimizable_tensors
 
-    def densification_postfix(self, new_mean, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation):
+    def densification_postfix(self, new_mean, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_t=None, new_f=None):
         d = {"mean": new_mean,
              "f_dc": new_features_dc,
              "f_rest": new_features_rest,
@@ -461,6 +504,14 @@ class GaussianModel(nn.Module):
         self._opacity = optimizable_tensors["opacity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
+
+        if self.gaussian_version == 1:
+            self.t = torch.cat((self.t, new_t), dim=0)
+            self.f = torch.cat((self.f, new_f), dim=0)
+        elif self.gaussian_version == 2:
+            self.f = torch.cat((self.f, new_f), dim=0)
+        elif self.gaussian_version == 3:
+            self.t = torch.cat((self.t, new_t), dim=0)
 
         self.mean_gradient_accum = torch.zeros(
             (self.get_mean.shape[0], 1), device=self.device)
@@ -491,8 +542,18 @@ class GaussianModel(nn.Module):
         new_features_rest = self._features_rest[selected_pts_mask].repeat(N, 1)
         new_opacity = self._opacity[selected_pts_mask].repeat(N, 1)
 
+        new_t = None
+        new_f = None
+        if self.gaussian_version == 1:
+            new_t = self.t[selected_pts_mask].repeat(N)
+            new_f = self.f[selected_pts_mask].repeat(N)
+        elif self.gaussian_version == 2:
+            new_f = self.f[selected_pts_mask].repeat(N)
+        elif self.gaussian_version == 3:
+            new_t = self.t[selected_pts_mask].repeat(N)
+
         self.densification_postfix(
-            new_mean, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation)
+            new_mean, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, new_t, new_f)
 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(
             N * selected_pts_mask.sum(), device=self.device, dtype=bool)))
@@ -512,8 +573,18 @@ class GaussianModel(nn.Module):
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
 
+        new_t = None
+        new_f = None
+        if self.gaussian_version == 1:
+            new_t = self.t[selected_pts_mask]
+            new_f = self.f[selected_pts_mask]
+        elif self.gaussian_version == 2:
+            new_f = self.f[selected_pts_mask]
+        elif self.gaussian_version == 3:
+            new_t = self.t[selected_pts_mask]
+
         self.densification_postfix(new_mean, new_features_dc, new_features_rest, new_opacities,
-                                   new_scaling, new_rotation)
+                                   new_scaling, new_rotation, new_t, new_f)
 
     def densify_and_prune(self):
 
@@ -565,18 +636,29 @@ class GaussianModel(nn.Module):
             projected_mean (torch.Tensor): (B, N) tensor of projected gaussian means.
             projected_var (torch.Tensor): (B, N) tensor of projected gaussian variances.
         """
-        mean = self.get_mean    # (N, 4)
 
-        t = mean[:, 3] if self.gaussian_dim == 4 else self.t   # (N)
+        mean = self.get_mean    # (N, ?)
+
+        if self.gaussian_version == 1:
+            t = self.t  # (N)
+            f = self.f  # (N)
+        elif self.gaussian_version == 2:
+            t = mean[:, 3]
+            f = self.f
+        elif self.gaussian_version == 3:
+            t = self.t
+            f = mean[:, 3]
+        elif self.gaussian_version == 4:
+            t = mean[:, 3]
+            f = mean[:, 4]
+
         v = self.normalize_speed(self.config.rendering.speed)
-
         d = query_points.unsqueeze(1) - mean[:, :3].unsqueeze(0)  # (B, N, 3)
         l = torch.norm(d, dim=-1)  # (B, N)
-        s = self.get_scaling    # (N, 4) or (N, 3)
+        s = self.get_scaling    # (N, ?)
 
-        # 4d space culling
-        # Only applied far-field culling instead of conic culling
-        # Ignorable since speed of sound is much faster than spatial distance
+        # Far-field culling
+        # Conic culling omitted since speed of sound is much faster than spatial distance
         with torch.no_grad():
             dist_mask = l + \
                 s.max(dim=1)[0] < self.config.rendering.cull_distance
@@ -596,28 +678,32 @@ class GaussianModel(nn.Module):
         b_idx = b_idx[sorted_l_indices]
         n_idx = n_idx[sorted_l_indices]
         t = t[n_idx]
+        f = f[n_idx]
         d = d[b_idx, n_idx, :]
         l = l[b_idx, n_idx]
         s = s[n_idx, :]
 
         # Projection
-        R = build_rotation(self._rotation[n_idx], device=self.device)
+        if self.gaussian_version == 2:
+            R = build_rotation(self._rotation[n_idx], device=self.device)
 
-        J0 = d[..., 0] / (v * l)
-        J1 = d[..., 1] / (v * l)
-        J2 = d[..., 2] / (v * l)
+            J0 = d[..., 0] / (v * l)
+            J1 = d[..., 1] / (v * l)
+            J2 = d[..., 2] / (v * l)
 
-        std0 = (J0 * R[..., 0, 0] + J1 * R[..., 1, 0] +
-                J2 * R[..., 2, 0] + R[..., 3, 0]) * s[..., 0]
-        std1 = (J0 * R[..., 0, 1] + J1 * R[..., 1, 1] +
-                J2 * R[..., 2, 1] + R[..., 3, 1]) * s[..., 1]
-        std2 = (J0 * R[..., 0, 2] + J1 * R[..., 1, 2] +
-                J2 * R[..., 2, 2] + R[..., 3, 2]) * s[..., 2]
-        std3 = (J0 * R[..., 0, 3] + J1 * R[..., 1, 3] +
-                J2 * R[..., 2, 3] + R[..., 3, 3]) * s[..., 3]
+            std0 = (J0 * R[..., 0, 0] + J1 * R[..., 1, 0] +
+                    J2 * R[..., 2, 0] + R[..., 3, 0]) * s[..., 0]
+            std1 = (J0 * R[..., 0, 1] + J1 * R[..., 1, 1] +
+                    J2 * R[..., 2, 1] + R[..., 3, 1]) * s[..., 1]
+            std2 = (J0 * R[..., 0, 2] + J1 * R[..., 1, 2] +
+                    J2 * R[..., 2, 2] + R[..., 3, 2]) * s[..., 2]
+            std3 = (J0 * R[..., 0, 3] + J1 * R[..., 1, 3] +
+                    J2 * R[..., 2, 3] + R[..., 3, 3]) * s[..., 3]
 
-        projected_mean = t + (l / v)  # (K)
-        projected_var = std0 ** 2 + std1 ** 2 + std2 ** 2 + std3 ** 2
+            projected_mean = torch.stack((t + (l / v), f), dim=-1)  # (K, 2)
+            projected_var = std0 ** 2 + std1 ** 2 + std2 ** 2 + std3 ** 2
+        else:
+            raise NotImplementedError
 
         return projected_mean, projected_var, d, b_idx, n_idx
 
@@ -634,7 +720,11 @@ class GaussianModel(nn.Module):
         B = query_points.shape[0]
         N = self.get_mean.shape[0]
         L = self.seq_len
-        final_signal = torch.zeros(B, L, requires_grad=True).to(self.device)
+        T = self.t_len
+        M = self.f_len
+        final_stft = torch.zeros(
+            B, M, T, device=self.device, dtype=torch.complex64)
+        final_signal = torch.zeros(B, L, device=self.device)
         if N == 0:
             return final_signal
 
@@ -642,35 +732,50 @@ class GaussianModel(nn.Module):
         projected_mean, projected_var, d, b_idx, n_idx = self.project(
             query_points)
 
+        if projected_mean.shape[0] == 0:
+            return final_signal
+
         # Time bin
-        t_pts = torch.linspace(-1., 1., L, device=self.device)  # (seq_len)
+        t_pts = torch.linspace(-1, 1, T+1, device=self.device)[:T]  # (t_len)
         t_bin = t_pts[1] - t_pts[0]
 
-        # Check gaussian overlay (3*sigma) per time bin
+        # Frequency bin
+        f_pts = torch.linspace(-1, 1, M+1, device=self.device)[:M]  # (f_len)
+        f_bin = f_pts[1] - f_pts[0]
+
+        # Check gaussian overlay (3*sigma box) per bin
         with torch.no_grad():
-            std = torch.sqrt(projected_var)
-            lower_bound = (projected_mean - 3 * std).unsqueeze(-1)
-            upper_bound = (projected_mean + 3 * std).unsqueeze(-1)
-            time_mask = torch.min(upper_bound, t_pts + t_bin / 2) - \
-                torch.max(lower_bound, t_pts - t_bin / 2) > 0
+            if self.gaussian_version == 2:
+                std = torch.sqrt(projected_var)
+                lower_bound = (projected_mean[..., 0] - 3 * std).unsqueeze(-1)
+                upper_bound = (projected_mean[..., 0] + 3 * std).unsqueeze(-1)
+                time_mask = torch.min(upper_bound, t_pts + t_bin / 2) - \
+                    torch.max(lower_bound, t_pts - t_bin / 2) > 0
 
-            if not time_mask.any():
-                return final_signal
+                if not time_mask.any():
+                    return final_signal
 
-            t_idx, idx = time_mask.T.nonzero(as_tuple=True)
+                t_idx, idx = time_mask.T.nonzero(as_tuple=True)
+                f_idx = ((projected_mean[idx, 1] + 1) * M / 2).int()
+            else:
+                raise NotImplementedError
 
-        # Apply time bin culling
+        # Apply bin culling
         t_pts = t_pts[t_idx]  # (K)
+        f_pts = f_pts[f_idx]  # (K)
         b_idx = b_idx[idx]  # (K)
         n_idx = n_idx[idx]  # (K)
-        projected_mean = projected_mean[idx]  # (K)
+        projected_mean = projected_mean[idx]  # (K, 2)
         projected_var = projected_var[idx]  # (K)
         opacity = self.get_opacity[n_idx].squeeze(-1)  # (K)
         d = d[idx]  # (K, 3)
 
         # Calculate gaussian power
-        power = torch.exp(-0.5 * (t_pts - projected_mean)
-                          ** 2 / projected_var)  # (K)
+        if self.gaussian_version == 2:
+            power = torch.exp(-0.5 * (t_pts - projected_mean[..., 0])
+                              ** 2 / projected_var)  # (K)
+        else:
+            raise NotImplementedError
 
         # Calculate alpha
         alpha = opacity * power  # (K)
@@ -685,18 +790,26 @@ class GaussianModel(nn.Module):
         b_idx = b_idx[alpha_mask]
         n_idx = n_idx[alpha_mask]
         t_idx = t_idx[alpha_mask]
+        f_idx = f_idx[alpha_mask]
         d = d[alpha_mask]
 
         # Index reference
         with torch.no_grad():
-            bt_idx = b_idx * L + t_idx
-            _, counts = torch.unique_consecutive(bt_idx, return_counts=True)
+            bft_idx = b_idx * (M * T) + f_idx * T + t_idx
 
-            inv_indices = torch.repeat_interleave(
-                torch.arange(len(counts), device=self.device), counts)
+            # Sort in f, t order
+            sort_idx = torch.argsort(bft_idx, stable=True)
+            bft_idx = bft_idx[sort_idx]
+
+            _, counts = torch.unique_consecutive(bft_idx, return_counts=True)
+
             idx_starts = F.pad(torch.cumsum(counts, dim=0)[:-1], (1, 0))
             inv_starts = torch.repeat_interleave(idx_starts, counts)
 
+        # Sort all relevant tensors
+        alpha = alpha[sort_idx]
+        n_idx = n_idx[sort_idx]
+        d = d[sort_idx]
 
         # Calculate log transmittance
         log_alpha = torch.log(1.0 - alpha + 1e-10)
@@ -713,7 +826,7 @@ class GaussianModel(nn.Module):
         # Apply transmittance culling
         alpha = alpha[transmittance_mask]
         n_idx = n_idx[transmittance_mask]
-        bt_idx = bt_idx[transmittance_mask]
+        bft_idx = bft_idx[transmittance_mask]
         log_transmittance = log_transmittance[transmittance_mask]
         d = d[transmittance_mask]
 
@@ -724,8 +837,13 @@ class GaussianModel(nn.Module):
         # Calculate final contribution
         contribution = decay * sh * transmittance * alpha
 
-        # Accumulate contributions to the final signal
-        final_signal.view(-1).index_add_(0, bt_idx, contribution)
+        # Accumulate contributions to the final STFT
+        final_stft.view(-1).index_add_(0, bft_idx, contribution)
+
+        # Inverse STFT to time domain
+        final_signal = torch.istft(
+            final_stft, n_fft=self.config.audio.n_fft, hop_length=self.config.audio.hop_length,
+            window=torch.hann_window(self.config.audio.n_fft, device=self.device), length=self.seq_len)
 
         # Archive update filter for densification
         with torch.no_grad():

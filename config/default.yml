@@ -31,7 +31,7 @@ training:
 
 # Model Initialization
 model:
-  gaussian_dim: 4
+  gaussian_version: 2 # 1:xyz, 2:xyzt, 3:xyzf, 4:xyztf
   sh_degree: 3
   initial_points: 10000
   init_from_data: True
