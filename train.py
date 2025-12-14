@@ -18,7 +18,6 @@ import wandb
 from gaussian_model import GaussianModel
 from torch.utils.data import DataLoader
 from datasets import WaveDataset
-from utils import logger
 from utils.criterion import Criterion
 from utils.general_utils import safe_state, now_str
 from utils.metric import metric_cal
