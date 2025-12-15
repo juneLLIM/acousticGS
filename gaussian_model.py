@@ -63,6 +63,7 @@ class GaussianModel(nn.Module):
         self.denom = torch.empty(0)
         self.optimizer = None
         self.device = torch.device(config.device)
+        self.span = config.rendering.coord_max - config.rendering.coord_min
 
         self.gaussian_version = config.model.gaussian_version
         if self.gaussian_version == 1:
@@ -284,9 +285,8 @@ class GaussianModel(nn.Module):
 
         # Simulate RIR at grid points
         chrono = time.time()
-        width = self.config.rendering.coord_max - self.config.rendering.coord_min
         room = pra.ShoeBox(
-            (width, width, width),
+            (self.span, self.span, self.span),
             fs=self.config.audio.fs,
             absorption=0.2,
             air_absorption=True,
@@ -295,7 +295,7 @@ class GaussianModel(nn.Module):
             use_rand_ism=True)
         pos_src = position_tx - self.config.rendering.coord_min
         room.add_source(pos_src)
-        room.add_microphone((mean.T.cpu() + 1) / 2 * width)
+        room.add_microphone((mean.T.cpu() + 1) / 2 * self.span)
         room.compute_rir()
         print("Simulation done in", time.time() - chrono, "seconds.")
 
@@ -620,10 +620,10 @@ class GaussianModel(nn.Module):
         return speed * dist_ratio / time_ratio
 
     def normalize_points(self, input_pts):
-        return 2 * (input_pts - self.config.rendering.coord_min) / (self.config.rendering.coord_max - self.config.rendering.coord_min) - 1
+        return 2 * (input_pts - self.config.rendering.coord_min) / self.span - 1
 
     def denormalize_points(self, input_pts):
-        return (input_pts + 1) / 2 * (self.config.rendering.coord_max - self.config.rendering.coord_min) + self.config.rendering.coord_min
+        return (input_pts + 1) / 2 * self.span + self.config.rendering.coord_min
 
     def project(self, query_points):
         """
