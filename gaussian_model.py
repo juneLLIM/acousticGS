@@ -163,6 +163,37 @@ class GaussianModel(nn.Module):
         return self._mean
 
     @property
+    def get_xyztf(self):
+        if self.gaussian_version == 1:
+            return torch.cat((self._mean, self.t.unsqueeze(-1), self.f.unsqueeze(-1)), dim=1)
+        elif self.gaussian_version == 2:
+            return torch.cat((self._mean, self.f.unsqueeze(-1)), dim=1)
+        elif self.gaussian_version == 3:
+            return torch.cat((self._mean, self.t.unsqueeze(-1)), dim=1)
+        elif self.gaussian_version == 4:
+            return self._mean
+
+    @property
+    def get_xyz(self):
+        return self._mean[:, :3]
+
+    @property
+    def get_t(self):
+        if self.gaussian_version in [1, 3]:
+            return self.t
+        elif self.gaussian_version in [2, 4]:
+            return self._mean[:, 3]
+
+    @property
+    def get_f(self):
+        if self.gaussian_version in [1, 2]:
+            return self.f
+        elif self.gaussian_version == 3:
+            return self._mean[:, 3]
+        elif self.gaussian_version == 4:
+            return self._mean[:, 4]
+
+    @property
     def get_features(self):
         features_dc = self._features_dc
         features_rest = self._features_rest
@@ -637,23 +668,11 @@ class GaussianModel(nn.Module):
             projected_var (torch.Tensor): (B, N) tensor of projected gaussian variances.
         """
 
-        mean = self.get_mean    # (N, ?)
-
-        if self.gaussian_version == 1:
-            t = self.t  # (N)
-            f = self.f  # (N)
-        elif self.gaussian_version == 2:
-            t = mean[:, 3]
-            f = self.f
-        elif self.gaussian_version == 3:
-            t = self.t
-            f = mean[:, 3]
-        elif self.gaussian_version == 4:
-            t = mean[:, 3]
-            f = mean[:, 4]
-
+        xyz = self.get_xyz    # (N, 3)
+        t = self.get_t  # (N)
+        f = self.get_f  # (N)
         v = self.normalize_speed(self.config.rendering.speed)
-        d = query_points.unsqueeze(1) - mean[:, :3].unsqueeze(0)  # (B, N, 3)
+        d = query_points.unsqueeze(1) - xyz.unsqueeze(0)  # (B, N, 3)
         l = torch.norm(d, dim=-1)  # (B, N)
         s = self.get_scaling    # (N, ?)
 
