@@ -16,6 +16,7 @@ import pytz
 import numpy as np
 import random
 import torch.nn.functional as F
+import torchaudio
 
 
 def inverse_sigmoid(x):
@@ -179,3 +180,18 @@ def now():
 
 def now_str():
     return datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d_%H-%M-%S")
+
+
+def save_audio(waveform, sr, save_path):
+    """Save waveform audio file.
+    """
+
+    waveform = waveform.detach().cpu()
+
+    # Normalize to -1.0 ~ 1.0
+    max_val = torch.max(torch.abs(waveform))
+    if max_val > 0:
+        waveform = waveform / max_val
+
+    # Save as WAV file
+    torchaudio.save(save_path, waveform.unsqueeze(0), sr)
