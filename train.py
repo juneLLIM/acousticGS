@@ -19,10 +19,10 @@ from gaussian_model import GaussianModel
 from torch.utils.data import DataLoader
 from datasets import WaveDataset
 from utils.criterion import Criterion
-from utils.general_utils import safe_state, now_str
 from utils.metric import metric_cal
 from utils.config import load_config
-from utils.visualize import plot_and_save_figure, visualize_gaussian_xyt_3d
+from utils.visualize import visualize_all, visualize_geometry
+from utils.general_utils import safe_state, now_str, save_audio
 
 
 def training(config):
@@ -92,8 +92,15 @@ def training(config):
     vis_dir = os.path.join(output_dir, "test_vis")
     os.makedirs(vis_dir, exist_ok=True)
 
-    # Call plotting function
-    plot_and_save_figure(
+    # Call visualization function
+    visualize_geometry(
+        train_rx=train_dataset.positions_rx,
+        train_tx=train_dataset.positions_tx,
+        test_rx=test_dataset.positions_rx,
+        test_tx=test_dataset.positions_tx,
+        save_path=os.path.join(output_dir, "geometry.png"),
+    )
+    visualize_all(
         pred_freq=pred_freq[0, :],
         gt_freq=gt_freq[0, :],
         pred_time=pred_time[0, :],
@@ -101,7 +108,17 @@ def training(config):
         position_rx=position_rx[0, :],
         position_tx=position_tx[0, :],
         mode_set="test",
-        save_path=os.path.join(vis_dir, f"iter_0.png")
+        save_dir=vis_dir,
+        iteration=0,
+        gaussians=gaussians,
+        sr=config.audio.fs,
+        coord_min=config.rendering.coord_min,
+        coord_max=config.rendering.coord_max,
+    )
+    save_audio(
+        waveform=gt_time[0, :],
+        sr=config.audio.fs,
+        save_path=os.path.join(vis_dir, f"audio_gt.wav")
     )
 
     for iteration, batch in enumerate(train_loader, start=first_iter+1):
@@ -190,7 +207,7 @@ def training(config):
                     pred_time, gt_time.to(device))
 
                 # Call plotting function
-                plot_and_save_figure(
+                visualize_all(
                     pred_freq=pred_freq[0, :],
                     gt_freq=gt_freq[0, :],
                     pred_time=pred_time[0, :],
@@ -198,15 +215,13 @@ def training(config):
                     position_rx=position_rx[0, :],
                     position_tx=position_tx[0, :],
                     mode_set="test",
-                    save_path=os.path.join(vis_dir, f"iter_{iteration}.png")
+                    save_dir=vis_dir,
+                    iteration=iteration,
+                    gaussians=gaussians,
+                    sr=config.audio.fs,
+                    coord_min=config.rendering.coord_min,
+                    coord_max=config.rendering.coord_max,
                 )
-
-                # # Visualize the 3D Gaussian distribution
-                # vis_3d_dir = os.path.join(output_dir, "gaussian_vis_3d")
-                # os.makedirs(vis_3d_dir, exist_ok=True)
-                # save_vis_path = os.path.join(
-                #     vis_3d_dir, f"iter_{iteration}.png")
-                # visualize_gaussian_xyt_3d(gaussians, save_vis_path)
 
             # Save model
             if iteration % config.logging.save_freq == 0:
