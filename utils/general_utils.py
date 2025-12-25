@@ -87,6 +87,7 @@ def strip_symmetric(sym, device="cpu"):
 
 def build_rotation(rot, device="cpu"):
 
+    # 3D rotation matrix from quaternion
     if rot.shape[-1] == 4:
 
         q = F.normalize(rot, dim=-1)
@@ -105,6 +106,7 @@ def build_rotation(rot, device="cpu"):
         R[:, 2, 1] = 2 * (y*z + r*x)
         R[:, 2, 2] = 1 - 2 * (x*x + y*y)
 
+    # 4D rotation matrix from dual quaternion
     elif rot.shape[-1] == 8:
 
         l = rot[..., :4]
@@ -137,6 +139,29 @@ def build_rotation(rot, device="cpu"):
         R[..., 3, 1] = a*r - b*s + c*p - d*q
         R[..., 3, 2] = a*q + b*p + c*s + d*r
         R[..., 3, 3] = a*p - b*q - c*r + d*s
+
+    # 5D rotation matrix from rotor vector
+    elif rot.shape[-1] == 10:
+        
+        A = torch.zeros((rot.shape[0], 5, 5), device=device, dtype=rot.dtype)
+        
+        A[:, 0, 1] = rot[:, 0]
+        A[:, 0, 2] = rot[:, 1]
+        A[:, 0, 3] = rot[:, 2]
+        A[:, 0, 4] = rot[:, 3]
+        
+        A[:, 1, 2] = rot[:, 4]
+        A[:, 1, 3] = rot[:, 5]
+        A[:, 1, 4] = rot[:, 6]
+        
+        A[:, 2, 3] = rot[:, 7]
+        A[:, 2, 4] = rot[:, 8]
+        
+        A[:, 3, 4] = rot[:, 9]
+        
+        A = A - A.transpose(-1, -2)
+        
+        R = torch.matrix_exp(A)
 
     return R
 

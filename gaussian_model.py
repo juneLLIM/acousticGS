@@ -156,7 +156,7 @@ class GaussianModel(nn.Module):
         elif self.gaussian_dim == 4:
             return self.rotation_activation(self._rotation.view(-1, 4, 2)).view(-1, 8)
         elif self.gaussian_dim == 5:
-            return NotImplementedError
+            return self.rotation_activation(self._rotation)
 
     @property
     def get_mean(self):
