@@ -242,7 +242,7 @@ class GaussianModel(nn.Module):
 
         count = self.config.model.initial_points
 
-        # Initialize mean, scaling(small scales), rotation(identity quaternions)
+        # Initialize mean, scaling(small scales), rotation(identity quaternions or rotors)
         if self.gaussian_dim == 3:
             mean = torch.rand(count, 3, device=self.device) * 2 - 1
             scales = torch.full((count, 3), 0.01, device=self.device).log()
@@ -254,8 +254,12 @@ class GaussianModel(nn.Module):
             rots = torch.zeros((count, 8), device=self.device)
             rots[:, 0] = 1
             rots[:, 4] = 1
+        elif self.gaussian_dim == 5:
+            mean = torch.rand(count, 5, device=self.device) * 2 - 1
+            scales = torch.full((count, 5), 0.01, device=self.device).log()
+            rots = torch.zeros((count, 10), device=self.device)
         else:
-            raise NotImplementedError
+            raise ValueError("Invalid Gaussian dimension.")
 
         # Initialize time and frequency
         if self.gaussian_version == 1:
@@ -348,7 +352,7 @@ class GaussianModel(nn.Module):
         t = t / self.t_len * 2 - 1
         f = f / self.f_len * 2 - 1
 
-        # Initialize scaling(small scales) and rotation(identity quaternions)
+        # Initialize scaling(small scales) and rotation(identity quaternions or rotors)
         if self.gaussian_dim == 3:
             scales = torch.full((count, 3), 0.01, device=self.device).log()
             rots = torch.zeros((count, 4), device=self.device)
@@ -358,8 +362,11 @@ class GaussianModel(nn.Module):
             rots = torch.zeros((count, 8), device=self.device)
             rots[:, 0] = 1
             rots[:, 4] = 1
+        elif self.gaussian_dim == 5:
+            scales = torch.full((count, 5), 0.01, device=self.device).log()
+            rots = torch.zeros((count, 10), device=self.device)
         else:
-            raise NotImplementedError
+            raise ValueError("Invalid Gaussian dimension.")
 
         # Initialize mean, time, and frequency
         if self.gaussian_version == 1:
@@ -702,10 +709,10 @@ class GaussianModel(nn.Module):
         l = l[b_idx, n_idx]
         s = s[n_idx, :]
 
+        R = build_rotation(self._rotation[n_idx], device=self.device)
+
         # Projection
         if self.gaussian_version == 2:
-            R = build_rotation(self._rotation[n_idx], device=self.device)
-
             J0 = d[..., 0] / (v * l)
             J1 = d[..., 1] / (v * l)
             J2 = d[..., 2] / (v * l)
@@ -721,6 +728,32 @@ class GaussianModel(nn.Module):
 
             projected_mean = torch.stack((t + (l / v), f), dim=-1)  # (K, 2)
             projected_var = std0 ** 2 + std1 ** 2 + std2 ** 2 + std3 ** 2
+        elif self.gaussian_version == 4:
+
+            J00 = d[..., 0] / (v * l)
+            J01 = d[..., 1] / (v * l)
+            J02 = d[..., 2] / (v * l)
+
+            JR00 = (J00 * R[..., 0, 0] + J01 * R[..., 1, 0] +
+                    J02 * R[..., 2, 0] + R[..., 3, 0])
+            JR01 = (J00 * R[..., 0, 1] + J01 * R[..., 1, 1] +
+                    J02 * R[..., 2, 1] + R[..., 3, 1])
+            JR02 = (J00 * R[..., 0, 2] + J01 * R[..., 1, 2] +
+                    J02 * R[..., 2, 2] + R[..., 3, 2])
+            JR03 = (J00 * R[..., 0, 3] + J01 * R[..., 1, 3] +
+                    J02 * R[..., 2, 3] + R[..., 3, 3])
+            JR04 = (J00 * R[..., 0, 4] + J01 * R[..., 1, 4] +
+                    J02 * R[..., 2, 4] + R[..., 3, 4])
+
+            V00 = ((JR00 * s[..., 0]) ** 2 + (JR01 * s[..., 1]) ** 2 +
+                   (JR02 * s[..., 2]) ** 2 + (JR03 * s[..., 3]) ** 2 + (JR04 * s[..., 4]) ** 2)
+            Cov = (JR00 * R[..., 4, 0] * s[..., 0] ** 2 + JR01 * R[..., 4, 1] * s[..., 1] ** 2 +
+                   JR02 * R[..., 4, 2] * s[..., 2] ** 2 + JR03 * R[..., 4, 3] * s[..., 3] ** 2 + JR04 * R[..., 4, 4] * s[..., 4] ** 2)
+            V11 = ((R[..., 4, 0] * s[..., 0]) ** 2 + (R[..., 4, 1] * s[..., 1]) ** 2 +
+                   (R[..., 4, 2] * s[..., 2]) ** 2 + (R[..., 4, 3] * s[..., 3]) ** 2 + (R[..., 4, 4] * s[..., 4]) ** 2)
+
+            projected_mean = torch.stack((t + (l / v), f), dim=-1)  # (K, 2)
+            projected_var = torch.stack((V00, V11, Cov), dim=-1)  # (K, 3)
         else:
             raise NotImplementedError
 
@@ -774,8 +807,35 @@ class GaussianModel(nn.Module):
                 if not time_mask.any():
                     return final_signal
 
-                t_idx, idx = time_mask.T.nonzero(as_tuple=True)
+                idx, t_idx = time_mask.nonzero(as_tuple=True)
                 f_idx = ((projected_mean[idx, 1] + 1) * M / 2).int()
+
+            elif self.gaussian_version == 4:
+                V00 = projected_var[:, 0]
+                V11 = projected_var[:, 1]
+                Cov = projected_var[:, 2]
+                det = V00 * V11 - Cov ** 2
+                mid = (V00 + V11) / 2
+                sqrt_D = torch.sqrt(torch.clamp(mid ** 2 - det, min=0.1))
+                radius = 3 * torch.sqrt(torch.max(mid + sqrt_D,  mid - sqrt_D))
+
+                lower_bound_t = (projected_mean[..., 0] - radius).unsqueeze(-1)
+                upper_bound_t = (projected_mean[..., 0] + radius).unsqueeze(-1)
+                time_mask = torch.min(upper_bound_t, t_pts + t_bin / 2) - \
+                    torch.max(lower_bound_t, t_pts - t_bin / 2) > 0
+
+                lower_bound_f = (projected_mean[..., 1] - radius).unsqueeze(-1)
+                upper_bound_f = (projected_mean[..., 1] + radius).unsqueeze(-1)
+                freq_mask = torch.min(upper_bound_f, f_pts + f_bin / 2) - \
+                    torch.max(lower_bound_f, f_pts - f_bin / 2) > 0
+
+                combined_mask = time_mask.unsqueeze(1) & freq_mask.unsqueeze(2)
+
+                if not combined_mask.any():
+                    return final_signal
+
+                idx, f_idx, t_idx = combined_mask.nonzero(as_tuple=True)
+
             else:
                 raise NotImplementedError
 
@@ -793,6 +853,15 @@ class GaussianModel(nn.Module):
         if self.gaussian_version == 2:
             power = torch.exp(-0.5 * (t_pts - projected_mean[..., 0])
                               ** 2 / projected_var)  # (K)
+        elif self.gaussian_version == 4:
+            V00 = projected_var[:, 0]
+            V11 = projected_var[:, 1]
+            Cov = projected_var[:, 2]
+            det = V00 * V11 - Cov ** 2
+            dt = t_pts - projected_mean[..., 0]
+            df = f_pts - projected_mean[..., 1]
+            power = torch.exp(-0.5 *
+                              (V11 * dt ** 2 + V00 * df ** 2 - 2 * Cov * dt * df) / det)
         else:
             raise NotImplementedError
 
