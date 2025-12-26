@@ -741,6 +741,9 @@ class GaussianModel(nn.Module):
 
             projected_mean = torch.stack((t + (l / v), f), dim=-1)  # (K, 2)
             projected_var = std0 ** 2 + std1 ** 2 + std2 ** 2 + std3 ** 2
+        elif self.gaussian_version == 3:
+            projected_mean = torch.stack((t + (l / v), f), dim=-1)  # (K, 2)
+            projected_var = R[..., 3, 3]**2 * s[..., 3]**2
         elif self.gaussian_version == 4:
 
             J00 = d[..., 0] / (v * l)
@@ -821,7 +824,36 @@ class GaussianModel(nn.Module):
                     return final_signal
 
                 idx, t_idx = time_mask.nonzero(as_tuple=True)
-                f_idx = ((projected_mean[idx, 1] + 1) * M / 2).int()
+                f_idx = ((projected_mean[idx, 1] + 1) * M / 2).long()
+
+                valid_f = (f_idx >= 0) & (f_idx < M)
+                if not valid_f.any():
+                    return final_signal
+
+                idx = idx[valid_f]
+                t_idx = t_idx[valid_f]
+                f_idx = f_idx[valid_f]
+
+            elif self.gaussian_version == 3:
+                std = torch.sqrt(projected_var)
+                lower_bound = (projected_mean[..., 1] - 3 * std).unsqueeze(-1)
+                upper_bound = (projected_mean[..., 1] + 3 * std).unsqueeze(-1)
+                freq_mask = torch.min(upper_bound, f_pts + f_bin / 2) - \
+                    torch.max(lower_bound, f_pts - f_bin / 2) > 0
+
+                if not freq_mask.any():
+                    return final_signal
+
+                idx, f_idx = freq_mask.nonzero(as_tuple=True)
+                t_idx = ((projected_mean[idx, 0] + 1) * T / 2).long()
+
+                valid_t = (t_idx >= 0) & (t_idx < T)
+                if not valid_t.any():
+                    return final_signal
+
+                idx = idx[valid_t]
+                f_idx = f_idx[valid_t]
+                t_idx = t_idx[valid_t]
 
             elif self.gaussian_version == 4:
                 V00 = projected_var[:, 0]
@@ -890,6 +922,9 @@ class GaussianModel(nn.Module):
         # Calculate gaussian power
         if self.gaussian_version == 2:
             power = torch.exp(-0.5 * (t_pts[t_idx] - projected_mean[idx, 0])
+                              ** 2 / projected_var[idx])
+        elif self.gaussian_version == 3:
+            power = torch.exp(-0.5 * (f_pts[f_idx] - projected_mean[idx, 1])
                               ** 2 / projected_var[idx])
         elif self.gaussian_version == 4:
             V00 = projected_var[idx, 0]
