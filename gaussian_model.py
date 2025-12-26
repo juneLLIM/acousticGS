@@ -725,7 +725,11 @@ class GaussianModel(nn.Module):
         R = build_rotation(self._rotation[n_idx], device=self.device)
 
         # Projection
-        if self.gaussian_version == 2:
+        if self.gaussian_version == 1:
+            projected_var = 0
+
+        elif self.gaussian_version == 2:
+
             J0 = d[..., 0] / (v * l)
             J1 = d[..., 1] / (v * l)
             J2 = d[..., 2] / (v * l)
@@ -739,11 +743,11 @@ class GaussianModel(nn.Module):
             std3 = (J0 * R[..., 0, 3] + J1 * R[..., 1, 3] +
                     J2 * R[..., 2, 3] + R[..., 3, 3]) * s[..., 3]
 
-            projected_mean = torch.stack((t + (l / v), f), dim=-1)  # (K, 2)
             projected_var = std0 ** 2 + std1 ** 2 + std2 ** 2 + std3 ** 2
+
         elif self.gaussian_version == 3:
-            projected_mean = torch.stack((t + (l / v), f), dim=-1)  # (K, 2)
             projected_var = R[..., 3, 3]**2 * s[..., 3]**2
+
         elif self.gaussian_version == 4:
 
             J00 = d[..., 0] / (v * l)
@@ -768,10 +772,9 @@ class GaussianModel(nn.Module):
             V11 = ((R[..., 4, 0] * s[..., 0]) ** 2 + (R[..., 4, 1] * s[..., 1]) ** 2 +
                    (R[..., 4, 2] * s[..., 2]) ** 2 + (R[..., 4, 3] * s[..., 3]) ** 2 + (R[..., 4, 4] * s[..., 4]) ** 2)
 
-            projected_mean = torch.stack((t + (l / v), f), dim=-1)  # (K, 2)
             projected_var = torch.stack((V00, V11, Cov), dim=-1)  # (K, 3)
-        else:
-            raise NotImplementedError
+
+        projected_mean = torch.stack((t + (l / v), f), dim=-1)  # (K, 2)
 
         return projected_mean, projected_var, d, l, b_idx, n_idx
 
@@ -813,7 +816,23 @@ class GaussianModel(nn.Module):
 
         # Check gaussian overlay (3*sigma box) per bin
         with torch.no_grad():
-            if self.gaussian_version == 2:
+            if self.gaussian_version == 1:
+                idx = torch.arange(
+                    projected_mean.shape[0], device=self.device)
+                t_idx = ((projected_mean[idx, 0] + 1) * T / 2).long()
+                f_idx = ((projected_mean[idx, 1] + 1) * M / 2).long()
+
+                valid_t = (t_idx >= 0) & (t_idx < T)
+                valid_f = (f_idx >= 0) & (f_idx < M)
+                valid = valid_t & valid_f
+                if not valid.any():
+                    return final_signal
+
+                idx = idx[valid]
+                t_idx = t_idx[valid]
+                f_idx = f_idx[valid]
+
+            elif self.gaussian_version == 2:
                 std = torch.sqrt(projected_var)
                 lower_bound = (projected_mean[..., 0] - 3 * std).unsqueeze(-1)
                 upper_bound = (projected_mean[..., 0] + 3 * std).unsqueeze(-1)
@@ -916,11 +935,10 @@ class GaussianModel(nn.Module):
                 f_idx = repeated_f_start + (local_indices // repeated_num_t)
                 t_idx = repeated_t_start + (local_indices % repeated_num_t)
 
-            else:
-                raise NotImplementedError
-
         # Calculate gaussian power
-        if self.gaussian_version == 2:
+        if self.gaussian_version == 1:
+            power = 1.0
+        elif self.gaussian_version == 2:
             power = torch.exp(-0.5 * (t_pts[t_idx] - projected_mean[idx, 0])
                               ** 2 / projected_var[idx])
         elif self.gaussian_version == 3:
@@ -935,8 +953,6 @@ class GaussianModel(nn.Module):
             df = f_pts[f_idx] - projected_mean[idx, 1]
             power = torch.exp(-0.5 *
                               (V11 * dt ** 2 + V00 * df ** 2 - 2 * Cov * dt * df) / det)
-        else:
-            raise NotImplementedError
 
         # Calculate alpha
         alpha = self.get_opacity[n_idx[idx]].squeeze(-1) * power
