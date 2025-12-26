@@ -44,7 +44,7 @@ class GaussianModel(nn.Module):
         self.rotation_activation = torch.nn.functional.normalize
 
         self.stft = partial(
-            torch.stft, n_fft=self.config.audio.n_fft, return_complex=True, hop_length=self.config.audio.hop_length, window=torch.hann_window(self.config.audio.n_fft, device=self.device))
+            torch.stft, n_fft=self.config.audio.n_fft, return_complex=True, hop_length=self.config.audio.hop_length, window=self.window)
 
     def __init__(self, config):
         super().__init__()
@@ -64,6 +64,8 @@ class GaussianModel(nn.Module):
         self.optimizer = None
         self.device = torch.device(config.device)
         self.span = config.rendering.coord_max - config.rendering.coord_min
+        self.window = torch.hann_window(
+            self.config.audio.n_fft, device=self.device)
 
         self.gaussian_version = config.model.gaussian_version
         if self.gaussian_version == 1:
@@ -931,7 +933,7 @@ class GaussianModel(nn.Module):
         # Inverse STFT to time domain
         final_signal = torch.istft(
             final_stft, n_fft=self.config.audio.n_fft, hop_length=self.config.audio.hop_length,
-            window=torch.hann_window(self.config.audio.n_fft, device=self.device), length=self.seq_len)
+            window=self.window, length=self.seq_len)
 
         # Archive update filter for densification
         with torch.no_grad():

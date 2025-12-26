@@ -27,9 +27,9 @@ class Criterion(nn.Module):
         gt_freq = torch.fft.rfft(gt_time, dim=-1)
 
         pred_spec = torch.abs(torch.stft(
-            pred_time, n_fft=self.cfg.audio.n_fft, return_complex=True))
+            pred_time, n_fft=self.cfg.audio.n_fft, return_complex=True, window=torch.hann_window(self.cfg.audio.n_fft).to(pred_time.device)))
         gt_spec = torch.abs(torch.stft(
-            gt_time, n_fft=self.cfg.audio.n_fft, return_complex=True))
+            gt_time, n_fft=self.cfg.audio.n_fft, return_complex=True, window=torch.hann_window(self.cfg.audio.n_fft).to(gt_time.device)))
 
         pred_spec_energy = torch.sum(pred_spec ** 2, dim=1)
         gt_spec_energy = torch.sum(gt_spec ** 2, dim=1)
