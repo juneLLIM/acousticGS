@@ -680,7 +680,7 @@ def visualize_gaussian_stft_path(gaussians, position_rx, position_tx, sr, save_p
     fig.colorbar(sm_op, cax=cbar_ax_op, shrink=0.8, label='Opacity')
 
     ax.legend()
-    plt.tight_layout(rect=[0, 0, 0.85, 1])
+    fig.subplots_adjust(left=0, right=0.8, top=0.9, bottom=0.1)
 
     # Save the figure
     plt.savefig(save_path, dpi=300)
