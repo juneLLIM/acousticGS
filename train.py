@@ -191,7 +191,7 @@ def training(config):
                         k: final_metric.get(k, 0) + v * len(batch) for k, v in metrics.items()}
 
                 final_metric = {
-                    k: v / len(test_loader) for k, v in final_metric.items()}
+                    k: v / len(test_dataset) for k, v in final_metric.items()}
 
                 if config.logging.wandb:
                     wandb.log(
