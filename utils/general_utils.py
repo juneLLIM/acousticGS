@@ -142,25 +142,11 @@ def build_rotation(rot, device="cpu"):
 
     # 5D rotation matrix from rotor vector
     elif rot.shape[-1] == 10:
-        
+
         A = torch.zeros((rot.shape[0], 5, 5), device=device, dtype=rot.dtype)
-        
-        A[:, 0, 1] = rot[:, 0]
-        A[:, 0, 2] = rot[:, 1]
-        A[:, 0, 3] = rot[:, 2]
-        A[:, 0, 4] = rot[:, 3]
-        
-        A[:, 1, 2] = rot[:, 4]
-        A[:, 1, 3] = rot[:, 5]
-        A[:, 1, 4] = rot[:, 6]
-        
-        A[:, 2, 3] = rot[:, 7]
-        A[:, 2, 4] = rot[:, 8]
-        
-        A[:, 3, 4] = rot[:, 9]
-        
-        A = A - A.transpose(-1, -2)
-        
+        i, j = torch.triu_indices(5, 5, offset=1, device=device)
+        A[:, i, j] = rot
+        A[:, j, i] = -rot
         R = torch.matrix_exp(A)
 
     return R
