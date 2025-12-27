@@ -41,6 +41,7 @@ def training(config):
 
     # Save the config file for reproducibility
     shutil.copy(config.path.config, os.path.join(output_dir, "config.yml"))
+    print(f"Using config file: {config.path.config}")
 
     # Initialize gaussian model
     gaussians = GaussianModel(config)
