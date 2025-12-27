@@ -11,7 +11,7 @@
 
 from functools import partial
 import torch
-from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation, build_scaling_rotation
+from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
 from torch import nn
 import torch.nn.functional as F
 from utils.sh_utils import eval_sh
@@ -25,23 +25,12 @@ except:
 class GaussianModel(nn.Module):
 
     def setup_functions(self):
-        def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation):
-
-            L = build_scaling_rotation(
-                scaling_modifier * scaling, rotation, device=self.device)
-            covariance = L @ L.transpose(1, 2)
-
-            return covariance
 
         self.scaling_activation = torch.exp
         self.scaling_inverse_activation = torch.log
 
-        self.covariance_activation = build_covariance_from_scaling_rotation
-
         self.opacity_activation = torch.sigmoid
         self.inverse_opacity_activation = inverse_sigmoid
-
-        self.rotation_activation = torch.nn.functional.normalize
 
         self.stft = partial(
             torch.stft, n_fft=self.config.audio.n_fft, return_complex=True, hop_length=self.config.audio.hop_length, window=self.window)
@@ -159,15 +148,6 @@ class GaussianModel(nn.Module):
         return self.scaling_activation(self._scaling)
 
     @property
-    def get_rotation(self):
-        if self.gaussian_dim == 3:
-            return self.rotation_activation(self._rotation)
-        elif self.gaussian_dim == 4:
-            return self.rotation_activation(self._rotation.view(-1, 4, 2)).view(-1, 8)
-        elif self.gaussian_dim == 5:
-            return self.rotation_activation(self._rotation)
-
-    @property
     def get_mean(self):
         return self._mean
 
@@ -209,19 +189,8 @@ class GaussianModel(nn.Module):
         return torch.cat((features_dc, features_rest), dim=1)
 
     @property
-    def get_features_dc(self):
-        return self._features_dc
-
-    @property
-    def get_features_rest(self):
-        return self._features_rest
-
-    @property
     def get_opacity(self):
         return self.opacity_activation(self._opacity)
-
-    def get_covariance(self, scaling_modifier=1):
-        return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
 
     def eval_features(self, sh, dir_pp, dist=None):
 
