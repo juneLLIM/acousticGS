@@ -23,15 +23,6 @@ def inverse_sigmoid(x):
     return torch.log(x/(1-x))
 
 
-def PILtoTorch(pil_image, resolution):
-    resized_image_PIL = pil_image.resize(resolution)
-    resized_image = torch.from_numpy(np.array(resized_image_PIL)) / 255.0
-    if len(resized_image.shape) == 3:
-        return resized_image.permute(2, 0, 1)
-    else:
-        return resized_image.unsqueeze(dim=-1).permute(2, 0, 1)
-
-
 def get_expon_lr_func(
     lr_init, lr_final, lr_delay_steps=0, lr_delay_mult=1.0, max_steps=1000000
 ):
@@ -66,23 +57,6 @@ def get_expon_lr_func(
         return delay_rate * log_lerp
 
     return helper
-
-
-def strip_lowerdiag(L, device="cpu"):
-    uncertainty = torch.zeros(
-        (L.shape[0], 6), dtype=torch.float, device=device)
-
-    uncertainty[:, 0] = L[:, 0, 0]
-    uncertainty[:, 1] = L[:, 0, 1]
-    uncertainty[:, 2] = L[:, 0, 2]
-    uncertainty[:, 3] = L[:, 1, 1]
-    uncertainty[:, 4] = L[:, 1, 2]
-    uncertainty[:, 5] = L[:, 2, 2]
-    return uncertainty
-
-
-def strip_symmetric(sym, device="cpu"):
-    return strip_lowerdiag(sym, device=device)
 
 
 def build_rotation(rot, device="cpu"):
@@ -150,14 +124,6 @@ def build_rotation(rot, device="cpu"):
         R = torch.matrix_exp(A)
 
     return R
-
-
-def build_scaling_rotation(s, r, device="cpu"):
-    L = torch.diag_embed(s)
-    R = build_rotation(r, device)
-
-    L = R @ L
-    return L
 
 
 def safe_state(silent, device="cpu"):
