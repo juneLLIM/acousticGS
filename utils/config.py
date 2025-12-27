@@ -67,6 +67,8 @@ def load_config():
         config.path.checkpoint = args.checkpoint_path
     if args.wandb is not None:
         config.logging.wandb = args.wandb
+    if args.num_samples is not None:
+        config.logging.num_samples = args.num_samples
 
     # Return the config namespace
     return config
