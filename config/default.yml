@@ -14,7 +14,8 @@ path:
 logging:
   project_name: "acoustic-gaussian-splatting"
   log: True # Enable terminal logging
-  wandb: True
+  wandb: True # Enable Weights & Biases logging
+  viz: True # Enable visualization
   log_freq: 10
   test_freq: 100
   viz_freq: 1000

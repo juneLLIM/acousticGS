@@ -34,15 +34,6 @@ def training(config):
     device = torch.device(config.device)
     print(f"Using device: {device}")
 
-    # Setup output directory
-    output_dir = f'{config.path.output}/{now_str()}'
-    print("Output folder: {}".format(output_dir))
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Save the config file for reproducibility
-    shutil.copy(config.path.config, os.path.join(output_dir, "config.yml"))
-    print(f"Using config file: {config.path.config}")
-
     # Initialize gaussian model
     gaussians = GaussianModel(config)
 
@@ -72,6 +63,56 @@ def training(config):
         print("No checkpoint path provided, starting from scratch.")
         gaussians.initialize(position_tx=train_dataset.positions_tx[0])
 
+    # Setup visualization
+    if config.logging.viz:
+
+        # Setup output directory
+        output_dir = f'{config.path.output}/{now_str()}'
+        print("Output folder: {}".format(output_dir))
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Save the config file for reproducibility
+        shutil.copy(config.path.config, os.path.join(output_dir, "config.yml"))
+        print(f"Using config file: {config.path.config}")
+
+        # Setup visualization directory
+        vis_dir = os.path.join(output_dir, "test_vis")
+        os.makedirs(vis_dir, exist_ok=True)
+
+        # Compute first sample in testset
+        gt_time, position_rx, position_tx = next(iter(test_loader))
+        pred_time = gaussians(position_rx.to(device))
+        loss_dict, gt_freq, pred_freq = criterion(
+            pred_time, gt_time.to(device))
+
+        visualize_geometry(
+            train_rx=train_dataset.positions_rx,
+            train_tx=train_dataset.positions_tx,
+            test_rx=test_dataset.positions_rx,
+            test_tx=test_dataset.positions_tx,
+            save_path=os.path.join(output_dir, "geometry.png"),
+        )
+        visualize_all(
+            pred_freq=pred_freq[0, :],
+            gt_freq=gt_freq[0, :],
+            pred_time=pred_time[0, :],
+            gt_time=gt_time[0, :],
+            position_rx=position_rx[0, :],
+            position_tx=position_tx[0, :],
+            mode_set="test",
+            save_dir=vis_dir,
+            iteration=0,
+            gaussians=gaussians,
+            sr=config.audio.fs,
+            coord_min=config.rendering.coord_min,
+            coord_max=config.rendering.coord_max,
+        )
+        save_audio(
+            waveform=gt_time[0, :],
+            sr=config.audio.fs,
+            save_path=os.path.join(vis_dir, f"audio_gt.wav")
+        )
+
     print(f"-----------------------------------------------")
 
     # Setup iteration timing
@@ -82,45 +123,6 @@ def training(config):
     print("Training start...")
     progress_bar = tqdm(range(first_iter, config.training.total_iterations),
                         desc="Training progress")
-
-    # Compute first sample in testset
-    gt_time, position_rx, position_tx = next(iter(test_loader))
-    pred_time = gaussians(position_rx.to(device))
-    loss_dict, gt_freq, pred_freq = criterion(
-        pred_time, gt_time.to(device))
-
-    # Saving path setup
-    vis_dir = os.path.join(output_dir, "test_vis")
-    os.makedirs(vis_dir, exist_ok=True)
-
-    # Call visualization function
-    visualize_geometry(
-        train_rx=train_dataset.positions_rx,
-        train_tx=train_dataset.positions_tx,
-        test_rx=test_dataset.positions_rx,
-        test_tx=test_dataset.positions_tx,
-        save_path=os.path.join(output_dir, "geometry.png"),
-    )
-    visualize_all(
-        pred_freq=pred_freq[0, :],
-        gt_freq=gt_freq[0, :],
-        pred_time=pred_time[0, :],
-        gt_time=gt_time[0, :],
-        position_rx=position_rx[0, :],
-        position_tx=position_tx[0, :],
-        mode_set="test",
-        save_dir=vis_dir,
-        iteration=0,
-        gaussians=gaussians,
-        sr=config.audio.fs,
-        coord_min=config.rendering.coord_min,
-        coord_max=config.rendering.coord_max,
-    )
-    save_audio(
-        waveform=gt_time[0, :],
-        sr=config.audio.fs,
-        save_path=os.path.join(vis_dir, f"audio_gt.wav")
-    )
 
     for iteration, batch in enumerate(train_loader, start=first_iter+1):
         if iteration > config.training.total_iterations:
@@ -199,7 +201,7 @@ def training(config):
                         {f"metrics/{k}": v for k, v in final_metric.items()}, step=iteration)
 
             # Visualizations
-            if iteration % config.logging.viz_freq == 0:
+            if iteration % config.logging.viz_freq == 0 and config.logging.viz:
 
                 # Compute first sample in testset
                 gt_time, position_rx, position_tx = next(iter(test_loader))

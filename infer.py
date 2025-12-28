@@ -5,8 +5,10 @@ import torch
 from torch.utils.data import DataLoader, Subset
 from gaussian_model import GaussianModel
 from datasets import WaveDataset
+from utils.criterion import Criterion
 from utils.metric import metric_cal
 from utils.config import load_config
+from utils.visualize import visualize_all
 
 
 def inference(config):
@@ -14,11 +16,6 @@ def inference(config):
     # Device setting
     device = torch.device(config.device)
     print(f"Using device: {device}")
-
-    # Setup output directory
-    output_dir = os.path.join(config.path.output, "inference")
-    print("Output folder: {}".format(output_dir))
-    os.makedirs(output_dir, exist_ok=True)
 
     # Config file
     print(f"Using config file: {config.path.config}")
@@ -70,6 +67,35 @@ def inference(config):
 
             final_metric = {
                 k: final_metric.get(k, 0) + v * len(batch) for k, v in metrics.items()}
+
+            # Visualizations
+            if config.logging.viz:
+
+                output_dir = "output/inference"
+                print("Visualization folder: {}".format(output_dir))
+                os.makedirs(output_dir, exist_ok=True)
+
+                criterion = Criterion(config)
+                loss_dict, gt_freq, pred_freq = criterion(
+                    pred_time, gt_time.to(device))
+
+                for j in range(len(batch)):
+
+                    visualize_all(
+                        pred_freq=pred_freq[j],
+                        gt_freq=gt_freq[j],
+                        pred_time=pred_time[j],
+                        gt_time=gt_time[j],
+                        position_rx=position_rx[j],
+                        position_tx=position_tx[j],
+                        mode_set="test",
+                        save_dir=output_dir,
+                        iteration=i * config.training.batchsize + j,
+                        gaussians=gaussians,
+                        sr=config.audio.fs,
+                        coord_min=config.rendering.coord_min,
+                        coord_max=config.rendering.coord_max,
+                    )
 
         final_metric = {
             k: v / len(test_dataset) for k, v in final_metric.items()}
