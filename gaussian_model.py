@@ -645,7 +645,7 @@ class GaussianModel(nn.Module):
     def denormalize_points(self, input_pts):
         return (input_pts + 1) / 2 * self.span + self.config.rendering.coord_min
 
-    def project(self, query_points):
+    def _project(self, query_points):
         """
         Projects gaussians to the given query points.
 
@@ -668,19 +668,14 @@ class GaussianModel(nn.Module):
         # Far-field culling
         # Conic culling omitted since speed of sound is much faster than spatial distance
         with torch.no_grad():
-            dist_mask = l + \
-                s.max(dim=1)[0] < self.config.rendering.cull_distance
+            dist_mask = l < self.config.rendering.cull_distance
             if not dist_mask.any():
                 return [torch.empty(0, device=self.device)] * 5
             b_idx, n_idx = dist_mask.nonzero(as_tuple=True)
 
-            # Sort by distance within each batch
-            _, b_cnt = torch.unique_consecutive(b_idx, return_counts=True)
-
-            sorted_l_indices = torch.cat([
-                torch.argsort(l_split) + offset for l_split, offset
-                in zip(l[b_idx, n_idx].split(b_cnt.tolist()), F.pad(b_cnt[:-1], (1, 0)).cumsum(0))
-            ])
+            sorted_l_indices = torch.argsort(
+                b_idx * self.config.rendering.cull_distance +
+                l[b_idx, n_idx], stable=True)
 
         # Apply culling with l sorted
         b_idx = b_idx[sorted_l_indices]
@@ -689,63 +684,296 @@ class GaussianModel(nn.Module):
         f = f[n_idx]
         d = d[b_idx, n_idx, :]
         l = l[b_idx, n_idx]
-        s = s[n_idx, :]
-
-        R = build_rotation(self._rotation[n_idx], device=self.device)
 
         # Projection
         if self.gaussian_version == 1:
             projected_var = 0
+        else:
+            R = build_rotation(self._rotation[n_idx], device=self.device)
+            s = s[n_idx, :]
 
-        elif self.gaussian_version == 2:
+            if self.gaussian_version == 2:
 
-            J0 = d[..., 0] / (v * l)
-            J1 = d[..., 1] / (v * l)
-            J2 = d[..., 2] / (v * l)
+                J0 = d[..., 0] / (v * l)
+                J1 = d[..., 1] / (v * l)
+                J2 = d[..., 2] / (v * l)
 
-            std0 = (J0 * R[..., 0, 0] + J1 * R[..., 1, 0] +
-                    J2 * R[..., 2, 0] + R[..., 3, 0]) * s[..., 0]
-            std1 = (J0 * R[..., 0, 1] + J1 * R[..., 1, 1] +
-                    J2 * R[..., 2, 1] + R[..., 3, 1]) * s[..., 1]
-            std2 = (J0 * R[..., 0, 2] + J1 * R[..., 1, 2] +
-                    J2 * R[..., 2, 2] + R[..., 3, 2]) * s[..., 2]
-            std3 = (J0 * R[..., 0, 3] + J1 * R[..., 1, 3] +
-                    J2 * R[..., 2, 3] + R[..., 3, 3]) * s[..., 3]
+                std0 = (J0 * R[..., 0, 0] + J1 * R[..., 1, 0] +
+                        J2 * R[..., 2, 0] + R[..., 3, 0]) * s[..., 0]
+                std1 = (J0 * R[..., 0, 1] + J1 * R[..., 1, 1] +
+                        J2 * R[..., 2, 1] + R[..., 3, 1]) * s[..., 1]
+                std2 = (J0 * R[..., 0, 2] + J1 * R[..., 1, 2] +
+                        J2 * R[..., 2, 2] + R[..., 3, 2]) * s[..., 2]
+                std3 = (J0 * R[..., 0, 3] + J1 * R[..., 1, 3] +
+                        J2 * R[..., 2, 3] + R[..., 3, 3]) * s[..., 3]
 
-            projected_var = std0 ** 2 + std1 ** 2 + std2 ** 2 + std3 ** 2
+                projected_var = std0 ** 2 + std1 ** 2 + std2 ** 2 + std3 ** 2
 
-        elif self.gaussian_version == 3:
-            projected_var = R[..., 3, 3]**2 * s[..., 3]**2
+            elif self.gaussian_version == 3:
+                projected_var = R[..., 3, 3] ** 2 * s[..., 3] ** 2
 
-        elif self.gaussian_version == 4:
+            elif self.gaussian_version == 4:
 
-            J00 = d[..., 0] / (v * l)
-            J01 = d[..., 1] / (v * l)
-            J02 = d[..., 2] / (v * l)
+                s0 = s[..., 0]
+                s1 = s[..., 1]
+                s2 = s[..., 2]
+                s3 = s[..., 3]
+                s4 = s[..., 4]
+                R00 = R[..., 4, 0]
+                R01 = R[..., 4, 1]
+                R02 = R[..., 4, 2]
+                R03 = R[..., 4, 3]
+                R04 = R[..., 4, 4]
 
-            JR00 = (J00 * R[..., 0, 0] + J01 * R[..., 1, 0] +
-                    J02 * R[..., 2, 0] + R[..., 3, 0])
-            JR01 = (J00 * R[..., 0, 1] + J01 * R[..., 1, 1] +
-                    J02 * R[..., 2, 1] + R[..., 3, 1])
-            JR02 = (J00 * R[..., 0, 2] + J01 * R[..., 1, 2] +
-                    J02 * R[..., 2, 2] + R[..., 3, 2])
-            JR03 = (J00 * R[..., 0, 3] + J01 * R[..., 1, 3] +
-                    J02 * R[..., 2, 3] + R[..., 3, 3])
-            JR04 = (J00 * R[..., 0, 4] + J01 * R[..., 1, 4] +
-                    J02 * R[..., 2, 4] + R[..., 3, 4])
+                J00 = d[..., 0] / (v * l)
+                J01 = d[..., 1] / (v * l)
+                J02 = d[..., 2] / (v * l)
 
-            V00 = ((JR00 * s[..., 0]) ** 2 + (JR01 * s[..., 1]) ** 2 +
-                   (JR02 * s[..., 2]) ** 2 + (JR03 * s[..., 3]) ** 2 + (JR04 * s[..., 4]) ** 2)
-            Cov = (JR00 * R[..., 4, 0] * s[..., 0] ** 2 + JR01 * R[..., 4, 1] * s[..., 1] ** 2 +
-                   JR02 * R[..., 4, 2] * s[..., 2] ** 2 + JR03 * R[..., 4, 3] * s[..., 3] ** 2 + JR04 * R[..., 4, 4] * s[..., 4] ** 2)
-            V11 = ((R[..., 4, 0] * s[..., 0]) ** 2 + (R[..., 4, 1] * s[..., 1]) ** 2 +
-                   (R[..., 4, 2] * s[..., 2]) ** 2 + (R[..., 4, 3] * s[..., 3]) ** 2 + (R[..., 4, 4] * s[..., 4]) ** 2)
+                JR00 = (J00 * R[..., 0, 0] + J01 * R[..., 1, 0] +
+                        J02 * R[..., 2, 0] + R[..., 3, 0])
+                JR01 = (J00 * R[..., 0, 1] + J01 * R[..., 1, 1] +
+                        J02 * R[..., 2, 1] + R[..., 3, 1])
+                JR02 = (J00 * R[..., 0, 2] + J01 * R[..., 1, 2] +
+                        J02 * R[..., 2, 2] + R[..., 3, 2])
+                JR03 = (J00 * R[..., 0, 3] + J01 * R[..., 1, 3] +
+                        J02 * R[..., 2, 3] + R[..., 3, 3])
+                JR04 = (J00 * R[..., 0, 4] + J01 * R[..., 1, 4] +
+                        J02 * R[..., 2, 4] + R[..., 3, 4])
 
-            projected_var = torch.stack((V00, V11, Cov), dim=-1)  # (K, 3)
+                V00 = ((JR00 * s0) ** 2 + (JR01 * s1) ** 2 +
+                       (JR02 * s2) ** 2 + (JR03 * s3) ** 2 + (JR04 * s4) ** 2)
+                Cov = (JR00 * R00 * s0 ** 2 + JR01 * R01 * s1 ** 2 +
+                       JR02 * R02 * s2 ** 2 + JR03 * R03 * s3 ** 2 + JR04 * R04 * s4 ** 2)
+                V11 = ((R00 * s0) ** 2 + (R01 * s1) ** 2 +
+                       (R02 * s2) ** 2 + (R03 * s3) ** 2 + (R04 * s4) ** 2)
+
+                projected_var = torch.stack((V00, V11, Cov), dim=-1)  # (K, 3)
 
         projected_mean = torch.stack((t + (l / v), f), dim=-1)  # (K, 2)
 
         return projected_mean, projected_var, d, l, b_idx, n_idx
+
+    def _overlay(self, projected_mean, projected_var):
+        """
+        Calculate the overlay of projected gaussians on the STFT grid.
+
+        Args:
+            projected_mean (torch.Tensor): (K, 2) tensor of projected gaussian means.
+            projected_var (torch.Tensor): (K,) or (K, 3) tensor of projected gaussian variances.
+        Returns:
+            idx (torch.Tensor): (L,) tensor of indices of gaussians that overlay on the STFT grid.
+            t_idx (torch.Tensor): (L,) tensor of time bin indices that overlay on the STFT grid.
+            f_idx (torch.Tensor): (L,) tensor of frequency bin indices that overlay on the STFT grid.
+        """
+
+        # STFT bin
+        T = self.t_len
+        M = self.f_len
+        t_pts = self.t_pts
+        t_bin = self.t_bin
+        f_pts = self.f_pts
+        f_bin = self.f_bin
+
+        # Calculate overlay
+        with torch.no_grad():
+            if self.gaussian_version == 1:
+                t_idx = ((projected_mean[..., 0] + 1) * T / 2).long()
+                f_idx = ((projected_mean[..., 1] + 1) * M / 2).long()
+                idx = torch.arange(projected_mean.shape[0], device=self.device)
+
+                valid = (t_idx >= 0) & (t_idx < T) & (f_idx >= 0) & (f_idx < M)
+
+            elif self.gaussian_version == 2:
+                std = torch.sqrt(projected_var)
+                lower_bound = (projected_mean[..., 0] - 3 * std).unsqueeze(-1)
+                upper_bound = (projected_mean[..., 0] + 3 * std).unsqueeze(-1)
+                time_mask = torch.min(upper_bound, t_pts + t_bin / 2) - \
+                    torch.max(lower_bound, t_pts - t_bin / 2) > 0
+
+                if not time_mask.any():
+                    return [torch.empty(0, device=self.device)] * 3
+
+                idx, t_idx = time_mask.nonzero(as_tuple=True)
+                f_idx = ((projected_mean[idx, 1] + 1) * M / 2).long()
+
+                valid = (f_idx >= 0) & (f_idx < M)
+
+            elif self.gaussian_version == 3:
+                std = torch.sqrt(projected_var)
+                lower_bound = (projected_mean[..., 1] - 3 * std).unsqueeze(-1)
+                upper_bound = (projected_mean[..., 1] + 3 * std).unsqueeze(-1)
+                freq_mask = torch.min(upper_bound, f_pts + f_bin / 2) - \
+                    torch.max(lower_bound, f_pts - f_bin / 2) > 0
+
+                if not freq_mask.any():
+                    return [torch.empty(0, device=self.device)] * 3
+
+                idx, f_idx = freq_mask.nonzero(as_tuple=True)
+                t_idx = ((projected_mean[idx, 0] + 1) * T / 2).long()
+
+                valid = (t_idx >= 0) & (t_idx < T)
+
+            elif self.gaussian_version == 4:
+
+                # Compute radius for 3-sigma ellipse
+                V00 = projected_var[:, 0]
+                V11 = projected_var[:, 1]
+                Cov = projected_var[:, 2]
+                det = V00 * V11 - Cov ** 2
+                mid = (V00 + V11) / 2
+                sqrt_D = torch.sqrt(torch.clamp(mid ** 2 - det, min=0.1))
+                radius = 3 * torch.sqrt(torch.max(mid + sqrt_D,  mid - sqrt_D))
+
+                # Compute grid indices
+                t_grid_start = t_pts[0] - t_bin / 2
+                f_grid_start = f_pts[0] - f_bin / 2
+
+                lower_bound_t = projected_mean[..., 0] - radius
+                upper_bound_t = projected_mean[..., 0] + radius
+
+                t_min_idx = (lower_bound_t - t_grid_start) // t_bin
+                t_max_idx = (upper_bound_t - t_grid_start) // t_bin
+
+                t_start = torch.clamp(t_min_idx, min=0, max=T-1)
+                t_end = torch.clamp(t_max_idx, min=0, max=T-1)
+                num_t = torch.clamp(t_end - t_start + 1, min=0)
+
+                lower_bound_f = projected_mean[..., 1] - radius
+                upper_bound_f = projected_mean[..., 1] + radius
+
+                f_min_idx = (lower_bound_f - f_grid_start) // f_bin
+                f_max_idx = (upper_bound_f - f_grid_start) // f_bin
+
+                f_start = torch.clamp(f_min_idx, min=0, max=M-1)
+                f_end = torch.clamp(f_max_idx, min=0, max=M-1)
+                num_f = torch.clamp(f_end - f_start + 1, min=0)
+
+                num_cells = (num_t * num_f).to(int)
+
+                if num_cells.sum() == 0:
+                    return [torch.empty(0, device=self.device)] * 3
+
+                # Create repeated indices
+                idx = torch.repeat_interleave(torch.arange(
+                    projected_mean.shape[0], device=self.device), num_cells)
+
+                cumulative_counts = torch.cumsum(num_cells, dim=0)
+                starts = cumulative_counts - num_cells
+                flat_indices = torch.arange(
+                    num_cells.sum(), device=self.device)
+
+                group_starts = torch.repeat_interleave(starts, num_cells)
+                local_indices = flat_indices - group_starts
+
+                repeated_num_t = torch.repeat_interleave(num_t, num_cells)
+                f_idx = torch.repeat_interleave(
+                    f_start, num_cells) + (local_indices // repeated_num_t)
+                t_idx = torch.repeat_interleave(
+                    t_start, num_cells) + (local_indices % repeated_num_t)
+
+                return idx.to(int), t_idx.to(int), f_idx.to(int)
+
+            if not valid.any():
+                return [torch.empty(0, device=self.device)] * 3
+
+            return idx[valid], t_idx[valid], f_idx[valid]
+
+    def _power(self, idx, t_idx, f_idx, projected_mean, projected_var):
+        """Compute gaussian power for the selected indices depending on `gaussian_version`."""
+
+        t_pts = self.t_pts
+        f_pts = self.f_pts
+
+        if self.gaussian_version == 1:
+            return 1.0
+        elif self.gaussian_version == 2:
+            return torch.exp(-0.5 * (t_pts[t_idx] - projected_mean[idx, 0])
+                             ** 2 / projected_var[idx])
+        elif self.gaussian_version == 3:
+            return torch.exp(-0.5 * (f_pts[f_idx] - projected_mean[idx, 1])
+                             ** 2 / projected_var[idx])
+        elif self.gaussian_version == 4:
+            V00 = projected_var[:, 0]
+            V11 = projected_var[:, 1]
+            Cov = projected_var[:, 2]
+            det = V00 * V11 - Cov ** 2
+
+            V00 = V00[idx]
+            V11 = V11[idx]
+            Cov = Cov[idx]
+            det = det[idx]
+
+            dt = t_pts[t_idx] - projected_mean[idx, 0]
+            df = f_pts[f_idx] - projected_mean[idx, 1]
+
+            return torch.exp(-0.5 *
+                             (V11 * dt ** 2 + V00 * df ** 2 - 2 * Cov * dt * df) / det)
+
+    def _transmittance(self, alpha, idx, b_idx, n_idx, t_idx, f_idx):
+        """Apply alpha culling, group sorting, and transmittance culling.
+        """
+
+        T = self.t_len
+        M = self.f_len
+
+        with torch.no_grad():
+            alpha_mask = alpha > 1/255
+            if not alpha_mask.any():
+                return [torch.empty(0, device=self.device)] * 5
+
+        alpha = alpha[alpha_mask]
+        idx = idx[alpha_mask]
+        b_idx = b_idx[idx]
+        n_idx = n_idx[idx]
+        t_idx = t_idx[alpha_mask]
+        f_idx = f_idx[alpha_mask]
+        d_idx = idx
+
+        # Index reference
+        with torch.no_grad():
+            bft_idx = b_idx * (M * T) + f_idx * T + t_idx
+
+            # Sort in f, t order
+            sort_idx = torch.argsort(bft_idx, stable=True)
+            bft_idx = bft_idx[sort_idx]
+
+            _, counts = torch.unique_consecutive(bft_idx, return_counts=True)
+
+            idx_starts = F.pad(torch.cumsum(counts, dim=0)[:-1], (1, 0))
+
+        # Sort all relevant tensors using the same permutation
+        alpha = alpha[sort_idx]
+        n_idx = n_idx[sort_idx]
+        d_idx = d_idx[sort_idx]
+
+        # Calculate log transmittance
+        log_alpha = torch.log(1.0 - alpha + 1e-10)
+        log_transmittance = torch.cumsum(log_alpha, dim=0)
+
+        # Convert to exclusive cumsum for correct transmittance (T_i = prod_{j<i} (1-a_j))
+        log_transmittance = log_transmittance - log_alpha
+
+        group_offsets = log_transmittance[idx_starts]
+        log_transmittance = log_transmittance - \
+            group_offsets.repeat_interleave(counts)
+
+        # Transmittance culling
+        with torch.no_grad():
+            transmittance_mask = log_transmittance > torch.tensor(
+                0.0001, device=self.device).log()
+            if not transmittance_mask.any():
+                return [torch.empty(0, device=self.device)] * 5
+
+        # Apply transmittance culling
+        alpha = alpha[transmittance_mask]
+        n_idx = n_idx[transmittance_mask]
+        bft_idx = bft_idx[transmittance_mask]
+        log_transmittance = log_transmittance[transmittance_mask]
+        d_idx = d_idx[transmittance_mask]
+
+        transmittance = torch.exp(log_transmittance)
+
+        return alpha, n_idx, bft_idx, transmittance, d_idx
 
     def render_signal_at_points(self, query_points):
         """
@@ -769,224 +997,33 @@ class GaussianModel(nn.Module):
             return final_signal
 
         # Project gaussians
-        projected_mean, projected_var, d, l, b_idx, n_idx = self.project(
+        projected_mean, projected_var, d, l, b_idx, n_idx = self._project(
             query_points)
-
-        if projected_mean.shape[0] == 0:
+        if projected_mean.numel() == 0:
             return final_signal
 
-        # Time bin
-        t_pts = self.t_pts
-        t_bin = self.t_bin
-
-        # Frequency bin
-        f_pts = self.f_pts
-        f_bin = self.f_bin
-
         # Check gaussian overlay (3*sigma box) per bin
-        with torch.no_grad():
-            if self.gaussian_version == 1:
-                idx = torch.arange(
-                    projected_mean.shape[0], device=self.device)
-                t_idx = ((projected_mean[idx, 0] + 1) * T / 2).long()
-                f_idx = ((projected_mean[idx, 1] + 1) * M / 2).long()
-
-                valid_t = (t_idx >= 0) & (t_idx < T)
-                valid_f = (f_idx >= 0) & (f_idx < M)
-                valid = valid_t & valid_f
-                if not valid.any():
-                    return final_signal
-
-                idx = idx[valid]
-                t_idx = t_idx[valid]
-                f_idx = f_idx[valid]
-
-            elif self.gaussian_version == 2:
-                std = torch.sqrt(projected_var)
-                lower_bound = (projected_mean[..., 0] - 3 * std).unsqueeze(-1)
-                upper_bound = (projected_mean[..., 0] + 3 * std).unsqueeze(-1)
-                time_mask = torch.min(upper_bound, t_pts + t_bin / 2) - \
-                    torch.max(lower_bound, t_pts - t_bin / 2) > 0
-
-                if not time_mask.any():
-                    return final_signal
-
-                idx, t_idx = time_mask.nonzero(as_tuple=True)
-                f_idx = ((projected_mean[idx, 1] + 1) * M / 2).long()
-
-                valid_f = (f_idx >= 0) & (f_idx < M)
-                if not valid_f.any():
-                    return final_signal
-
-                idx = idx[valid_f]
-                t_idx = t_idx[valid_f]
-                f_idx = f_idx[valid_f]
-
-            elif self.gaussian_version == 3:
-                std = torch.sqrt(projected_var)
-                lower_bound = (projected_mean[..., 1] - 3 * std).unsqueeze(-1)
-                upper_bound = (projected_mean[..., 1] + 3 * std).unsqueeze(-1)
-                freq_mask = torch.min(upper_bound, f_pts + f_bin / 2) - \
-                    torch.max(lower_bound, f_pts - f_bin / 2) > 0
-
-                if not freq_mask.any():
-                    return final_signal
-
-                idx, f_idx = freq_mask.nonzero(as_tuple=True)
-                t_idx = ((projected_mean[idx, 0] + 1) * T / 2).long()
-
-                valid_t = (t_idx >= 0) & (t_idx < T)
-                if not valid_t.any():
-                    return final_signal
-
-                idx = idx[valid_t]
-                f_idx = f_idx[valid_t]
-                t_idx = t_idx[valid_t]
-
-            elif self.gaussian_version == 4:
-                V00 = projected_var[:, 0]
-                V11 = projected_var[:, 1]
-                Cov = projected_var[:, 2]
-                det = V00 * V11 - Cov ** 2
-                mid = (V00 + V11) / 2
-                sqrt_D = torch.sqrt(torch.clamp(mid ** 2 - det, min=0.1))
-                radius = 3 * torch.sqrt(torch.max(mid + sqrt_D,  mid - sqrt_D))
-
-                # Optimized masking to save memory
-                t_grid_start = t_pts[0] - t_bin / 2
-                f_grid_start = f_pts[0] - f_bin / 2
-
-                lower_bound_t = projected_mean[..., 0] - radius
-                upper_bound_t = projected_mean[..., 0] + radius
-
-                t_min_idx = torch.floor(
-                    (lower_bound_t - t_grid_start) / t_bin).long()
-                t_max_idx = torch.floor(
-                    (upper_bound_t - t_grid_start) / t_bin).long()
-
-                t_start = torch.clamp(t_min_idx, min=0)
-                t_end = torch.clamp(t_max_idx, max=T-1)
-                num_t = torch.clamp(t_end - t_start + 1, min=0)
-
-                lower_bound_f = projected_mean[..., 1] - radius
-                upper_bound_f = projected_mean[..., 1] + radius
-
-                f_min_idx = torch.floor(
-                    (lower_bound_f - f_grid_start) / f_bin).long()
-                f_max_idx = torch.floor(
-                    (upper_bound_f - f_grid_start) / f_bin).long()
-
-                f_start = torch.clamp(f_min_idx, min=0)
-                f_end = torch.clamp(f_max_idx, max=M-1)
-                num_f = torch.clamp(f_end - f_start + 1, min=0)
-
-                num_cells = num_t * num_f
-
-                if num_cells.sum() == 0:
-                    return final_signal
-
-                # Generate indices
-                idx = torch.repeat_interleave(torch.arange(
-                    projected_mean.shape[0], device=self.device), num_cells)
-
-                cumulative_counts = torch.cumsum(num_cells, dim=0)
-                starts = cumulative_counts - num_cells
-                flat_indices = torch.arange(
-                    num_cells.sum(), device=self.device)
-
-                group_starts = torch.repeat_interleave(starts, num_cells)
-                local_indices = flat_indices - group_starts
-
-                repeated_num_t = torch.repeat_interleave(num_t, num_cells)
-                repeated_f_start = torch.repeat_interleave(f_start, num_cells)
-                repeated_t_start = torch.repeat_interleave(t_start, num_cells)
-
-                f_idx = repeated_f_start + (local_indices // repeated_num_t)
-                t_idx = repeated_t_start + (local_indices % repeated_num_t)
+        idx, t_idx, f_idx = self._overlay(projected_mean, projected_var)
+        if idx.numel() == 0:
+            return final_signal
 
         # Calculate gaussian power
-        if self.gaussian_version == 1:
-            power = 1.0
-        elif self.gaussian_version == 2:
-            power = torch.exp(-0.5 * (t_pts[t_idx] - projected_mean[idx, 0])
-                              ** 2 / projected_var[idx])
-        elif self.gaussian_version == 3:
-            power = torch.exp(-0.5 * (f_pts[f_idx] - projected_mean[idx, 1])
-                              ** 2 / projected_var[idx])
-        elif self.gaussian_version == 4:
-            V00 = projected_var[idx, 0]
-            V11 = projected_var[idx, 1]
-            Cov = projected_var[idx, 2]
-            det = V00 * V11 - Cov ** 2
-            dt = t_pts[t_idx] - projected_mean[idx, 0]
-            df = f_pts[f_idx] - projected_mean[idx, 1]
-            power = torch.exp(-0.5 *
-                              (V11 * dt ** 2 + V00 * df ** 2 - 2 * Cov * dt * df) / det)
+        power = self._power(idx, t_idx, f_idx, projected_mean, projected_var)
 
         # Calculate alpha
-        alpha = self.get_opacity[n_idx[idx]].squeeze(-1) * power
+        opacity = self.opacity_activation(self._opacity[n_idx]).squeeze(-1)
+        alpha = opacity[idx] * power
 
-        # Alpha culling
-        with torch.no_grad():
-            alpha_mask = alpha > 1/255
-            if not alpha_mask.any():
-                return final_signal
+        # Calculate transmittance by sorting and culling
+        alpha, n_idx, bft_idx, transmittance, d_idx = self._transmittance(
+            alpha, idx, b_idx, n_idx, t_idx, f_idx)
+        if alpha.numel() == 0:
+            return final_signal
 
-        alpha = alpha[alpha_mask]
-        idx = idx[alpha_mask]
-        b_idx = b_idx[idx]
-        n_idx = n_idx[idx]
-        t_idx = t_idx[alpha_mask]
-        f_idx = f_idx[alpha_mask]
-        d_idx = idx
-
-        # Index reference
-        with torch.no_grad():
-            bft_idx = b_idx * (M * T) + f_idx * T + t_idx
-
-            # Sort in f, t order
-            sort_idx = torch.argsort(bft_idx, stable=True)
-            bft_idx = bft_idx[sort_idx]
-
-            _, counts = torch.unique_consecutive(bft_idx, return_counts=True)
-
-            idx_starts = F.pad(torch.cumsum(counts, dim=0)[:-1], (1, 0))
-
-        # Sort all relevant tensors
-        alpha = alpha[sort_idx]
-        n_idx = n_idx[sort_idx]
-        d_idx = d_idx[sort_idx]
-
-        # Calculate log transmittance
-        log_alpha = torch.log(1.0 - alpha + 1e-10)
-        log_transmittance = torch.cumsum(log_alpha, dim=0)
-
-        # Convert to exclusive cumsum for correct transmittance (T_i = prod_{j<i} (1-a_j))
-        log_transmittance = log_transmittance - log_alpha
-
-        group_offsets = log_transmittance[idx_starts]
-        log_transmittance = log_transmittance - \
-            group_offsets.repeat_interleave(counts)
-
-        # Transmittance culling
-        with torch.no_grad():
-            transmittance_mask = log_transmittance > torch.tensor(
-                0.0001, device=self.device).log()
-            if not transmittance_mask.any():
-                return final_signal
-
-        # Apply transmittance culling
-        alpha = alpha[transmittance_mask]
-        n_idx = n_idx[transmittance_mask]
-        bft_idx = bft_idx[transmittance_mask]
-        log_transmittance = log_transmittance[transmittance_mask]
-        d_idx = d_idx[transmittance_mask]
-
-        d_final = d[d_idx]
-        l_final = l[d_idx]
-        decay = 1/l_final
-        sh = self.eval_features(self.get_features[n_idx], d_final, l_final)
-        transmittance = torch.exp(log_transmittance)
+        d = d[d_idx]
+        l = l[d_idx]
+        decay = 1/l
+        sh = self.eval_features(self.get_features[n_idx], d, l)
 
         # Calculate final contribution
         contribution = decay * sh * transmittance * alpha
