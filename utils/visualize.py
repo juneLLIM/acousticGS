@@ -203,7 +203,8 @@ def visualize_sound_field_video(gaussians, position_rx, position_tx, coord_min, 
 
     # Define grid
     resolution = 1
-    grid_vals = torch.arange(coord_min, coord_max, resolution, device='cpu')
+    grid_vals = torch.arange(coord_min*1.5, coord_max *
+                             1.5, resolution, device='cpu')
     grid_points = torch.cartesian_prod(grid_vals, grid_vals, grid_vals)
 
     # Time settings
@@ -241,9 +242,9 @@ def visualize_sound_field_video(gaussians, position_rx, position_tx, coord_min, 
     fig.colorbar(sm, ax=ax, label='Sound Pressure', shrink=0.8, pad=0.1)
 
     # Set static elements once
-    ax.set_xlim(coord_min, coord_max)
-    ax.set_ylim(coord_min, coord_max)
-    ax.set_zlim(coord_min, coord_max)
+    ax.set_xlim(coord_min*1.5, coord_max*1.5)
+    ax.set_ylim(coord_min*1.5, coord_max*1.5)
+    ax.set_zlim(coord_min*1.5, coord_max*1.5)
     ax.set_xlabel('x (m)')
     ax.set_ylabel('y (m)')
     ax.set_zlabel('z (m)')
@@ -299,15 +300,14 @@ def visualize_gaussian_spatial_video(gaussians, position_rx, position_tx, coord_
         seq_len = gaussians.seq_len
         total_time = seq_len / sr
         t_len = gaussians.t_len
-        span = gaussians.span
 
         # Denormalize xyztf
-        XYZ = XYZ / 2 * span
+        XYZ = gaussians.denormalize_points(XYZ)
         T = (T + 1) / 2 * total_time
         F = (F + 1) / 2 * (sr / 2)
 
         # Denormalize scaling
-        S_xyz = S[:, :3] / 2 * span
+        S_xyz = S[:, :3] / 2 * gaussians.span * gaussians.spatial_ratio
 
         if gaussians.gaussian_version == 1:
             S_t, S_f = None, None
@@ -504,16 +504,15 @@ def visualize_gaussian_stft_path(gaussians, position_rx, position_tx, sr, save_p
         features = gaussians.get_features
 
         # Denormalize
-        span = gaussians.span
         seq_len = gaussians.seq_len
         total_time = seq_len / sr
 
-        XYZ = XYZ / 2 * span
+        XYZ = gaussians.denormalize_points(XYZ)
         T = (T + 1) / 2 * total_time
         F = (F + 1) / 2 * (sr / 2)
 
         # Denormalize scaling
-        S_xyz = S[:, :3] / 2 * span
+        S_xyz = S[:, :3] / 2 * gaussians.span * gaussians.spatial_ratio
 
         if gaussians.gaussian_version == 1:
             S_t, S_f = None, None

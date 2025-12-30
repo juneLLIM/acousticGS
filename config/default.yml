@@ -39,6 +39,7 @@ model:
 
 # Rendering Parameters
 rendering:
+  spatial_ratio: 0.3 # (0,1] Ratio adjustment for spatial axis relative to stft axis
   coord_min: -6
   coord_max:  6
   speed: 343.8

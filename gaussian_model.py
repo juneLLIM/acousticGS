@@ -52,6 +52,7 @@ class GaussianModel(nn.Module):
         self.denom = torch.empty(0)
         self.optimizer = None
         self.device = torch.device(config.device)
+        self.spatial_ratio = config.rendering.spatial_ratio
         self.span = config.rendering.coord_max - config.rendering.coord_min
         self.window = torch.hann_window(
             self.config.audio.n_fft, device=self.device)
@@ -226,18 +227,21 @@ class GaussianModel(nn.Module):
 
         # Initialize mean, scaling(small scales), rotation(identity quaternions or rotors)
         if self.gaussian_dim == 3:
-            mean = torch.rand(count, 3, device=self.device) * 2 - 1
+            mean = (torch.rand(count, 3, device=self.device)
+                    * 2 - 1) * self.spatial_ratio
             scales = torch.full((count, 3), 0.01, device=self.device).log()
             rots = torch.zeros((count, 4), device=self.device)
             rots[:, 0] = 1
         elif self.gaussian_dim == 4:
-            mean = torch.rand(count, 4, device=self.device) * 2 - 1
+            mean = (torch.rand(count, 4, device=self.device)
+                    * 2 - 1) * self.spatial_ratio
             scales = torch.full((count, 4), 0.01, device=self.device).log()
             rots = torch.zeros((count, 8), device=self.device)
             rots[:, 0] = 1
             rots[:, 4] = 1
         elif self.gaussian_dim == 5:
-            mean = torch.rand(count, 5, device=self.device) * 2 - 1
+            mean = (torch.rand(count, 5, device=self.device)
+                    * 2 - 1) * self.spatial_ratio
             scales = torch.full((count, 5), 0.01, device=self.device).log()
             rots = torch.zeros((count, 10), device=self.device)
         else:
@@ -330,7 +334,7 @@ class GaussianModel(nn.Module):
         features[:, 0] = stft
 
         # Fix format
-        mean = mean.repeat_interleave(count_sqrt, dim=0)
+        mean = (mean * self.spatial_ratio).repeat_interleave(count_sqrt, dim=0)
         t = t / self.t_len * 2 - 1
         f = f / self.f_len * 2 - 1
 
@@ -621,7 +625,9 @@ class GaussianModel(nn.Module):
         prune_mask = (self.get_opacity < min_opacity).squeeze() \
             | (self.get_scaling.max(dim=1).values < min_scale) \
             | (self.get_scaling.max(dim=1).values > max_scale) \
-            | ((self.get_mean > 1) | (self.get_mean < -1)).any(dim=1)
+            | ((self.get_xyz > self.spatial_ratio) | (self.get_xyz < -self.spatial_ratio)).any(dim=1) \
+            | ((self.get_t > 1) | (self.get_t < -1)) \
+            | ((self.get_f > 1) | (self.get_f < -1))
 
         self.prune_points(prune_mask)
 
@@ -634,16 +640,15 @@ class GaussianModel(nn.Module):
 
     def normalize_speed(self, speed):
         # Both should be multiplied by 2 originally
-        dist_ratio = 1 / (self.config.rendering.coord_max -
-                          self.config.rendering.coord_min)
+        dist_ratio = self.spatial_ratio / self.span
         time_ratio = self.config.audio.fs / self.seq_len
         return speed * dist_ratio / time_ratio
 
     def normalize_points(self, input_pts):
-        return 2 * (input_pts - self.config.rendering.coord_min) / self.span - 1
+        return (2 * (input_pts - self.config.rendering.coord_min) / self.span - 1) * self.spatial_ratio
 
     def denormalize_points(self, input_pts):
-        return (input_pts + 1) / 2 * self.span + self.config.rendering.coord_min
+        return (input_pts / self.spatial_ratio + 1) / 2 * self.span + self.config.rendering.coord_min
 
     def _project(self, query_points):
         """
