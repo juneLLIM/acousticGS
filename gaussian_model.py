@@ -15,11 +15,7 @@ from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotati
 from torch import nn
 import torch.nn.functional as F
 from utils.sh_utils import eval_sh
-
-try:
-    from diff_gaussian_rasterization import SparseGaussianAdam
-except:
-    pass
+from diff_gaussian_rasterization import GaussianRasterizer, SparseGaussianAdam
 
 
 class GaussianModel(nn.Module):
@@ -411,7 +407,6 @@ class GaussianModel(nn.Module):
             try:
                 self.optimizer = SparseGaussianAdam(l, lr=0.0, eps=1e-15)
             except:
-                # A special version of the rasterizer is required to enable sparse adam
                 self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
         self.mean_scheduler_args = get_expon_lr_func(lr_init=self.config.optimizer.position_lr_init,
                                                      lr_final=self.config.optimizer.position_lr_final,

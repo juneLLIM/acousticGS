@@ -1,7 +1,7 @@
 # --- Default Configuration for Acoustic Gaussian Splatting ---
 
 # Device Setting
-device: "cuda:0"
+device: "cuda:1"
 
 # Data and Model Paths
 path:
@@ -18,8 +18,8 @@ logging:
   viz: True # Enable visualization
   log_freq: 10
   test_freq: 100
-  viz_freq: 1000
-  save_freq: 100000
+  viz_freq: 500
+  save_freq: 1000
 
 # Training Settings
 training:
@@ -32,7 +32,7 @@ training:
 
 # Model Initialization
 model:
-  gaussian_version: 2 # 1:xyz, 2:xyzt, 3:xyzf, 4:xyztf
+  gaussian_version: 4 # 1:xyz, 2:xyzt, 3:xyzf, 4:xyztf
   sh_degree: 3
   initial_points: 10000
   init_from_data: True

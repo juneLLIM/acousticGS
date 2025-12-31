@@ -2,8 +2,9 @@
 .vscode
 output
 build
-diff_rasterization/diff_rast.egg-info
-diff_rasterization/dist
+submodules/diff-gaussian-rasterization/diff_rast.egg-info
+submodules/diff-gaussian-rasterization/dist
+submodules/diff-gaussian-rasterization/diff_gaussian_rasterization/_C.cpython-310-x86_64-linux-gnu.so
 tensorboard_3d
 screenshots
 data
