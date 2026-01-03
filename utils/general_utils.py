@@ -80,7 +80,7 @@ def build_rotation(rot, device="cpu"):
         R[:, 2, 1] = 2 * (y*z + r*x)
         R[:, 2, 2] = 1 - 2 * (x*x + y*y)
 
-    # 4D rotation matrix from dual quaternion
+    # 4D rotation matrix from double quaternion
     elif rot.shape[-1] == 8:
 
         l = rot[..., :4]
@@ -114,7 +114,7 @@ def build_rotation(rot, device="cpu"):
         R[..., 3, 2] = a*q + b*p + c*s + d*r
         R[..., 3, 3] = a*p - b*q - c*r + d*s
 
-    # 5D rotation matrix from rotor vector
+    # 5D rotation matrix from bivector vector
     elif rot.shape[-1] == 10:
 
         A = torch.zeros((rot.shape[0], 5, 5), device=device, dtype=rot.dtype)

@@ -14,8 +14,10 @@ path:
 logging:
   project_name: "acoustic-gaussian-splatting"
   log: True # Enable terminal logging
+  cuda: True # Enable CUDA debug logging
   wandb: True # Enable Weights & Biases logging
   viz: True # Enable visualization
+  save: True # Enable model checkpoint saving
   log_freq: 10
   test_freq: 100
   viz_freq: 500
@@ -24,11 +26,7 @@ logging:
 # Training Settings
 training:
   total_iterations: 500000
-  batchsize: 1
-  lr: 5e-4
-  weight_decay: 0
-  T_max: 500000
-  eta_min: 5e-5
+  batchsize: 1 # TODO: Currently only single batch iteration is supported
 
 # Model Initialization
 model:
@@ -39,12 +37,13 @@ model:
 
 # Rendering Parameters
 rendering:
-  spatial_ratio: 0.3 # (0,1] Ratio adjustment for spatial axis relative to stft axis
+  scale_modifier: 1.0 # (0,1] Ratio adjustment for spatial axis relative to stft axis
   coord_min: -6
   coord_max:  6
   speed: 343.8
-  pathloss: 1.5
   cull_distance: 1
+  sh_clamping_threshold: -1.0 # Negative value means no clamping
+  antialiasing: False
 
 # Audio Processing Parameters
 audio:
@@ -64,7 +63,7 @@ loss_weights:
 
 # Optimization Parameters
 optimizer:
-  type: "adam"
+  type: "adam" # "adam" or "sparse_adam" (sparse_adam for efficient large-scale optimization)
   position_lr_init: 0.00016
   position_lr_final: 0.0000016
   position_lr_delay_mult: 0.01

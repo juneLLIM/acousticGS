@@ -3,7 +3,7 @@
  * GRAPHDECO research group, https://team.inria.fr/graphdeco
  * All rights reserved.
  *
- * This software is free for non-commercial, research and evaluation use 
+ * This software is free for non-commercial, research and evaluation use
  * under the terms of the LICENSE.md file.
  *
  * For inquiries contact  george.drettakis@inria.fr
@@ -21,60 +21,52 @@
 namespace BACKWARD
 {
 	void render(
+		int W, int H, int R, int B,
 		const dim3 grid, dim3 block,
 		const uint2* ranges,
 		const uint32_t* point_list,
-		int W, int H, int R, int B,
 		const uint32_t* per_bucket_tile_offset,
 		const uint32_t* bucket_to_tile,
-		const float* sampled_T, const float* sampled_ar, const float* sampled_ard,
-		const float* bg_color,
+		const float* sampled_T, const float* sampled_ar,
 		const float2* means2D,
 		const float4* conic_opacity,
-		const float* colors,
-		const float* depths,
-		const float* final_Ts,
+		const float* phasors,
+		const float* distances,
 		const uint32_t* n_contrib,
 		const uint32_t* max_contrib,
-		const float* pixel_colors,
-		const float* pixel_indepths,
-		const float* dL_dpixels,
-		const float* dL_invdepths,
-		float3* dL_dmean2D,
+		const float* pixel_phasors,
+		const float* dL_dstft,
+		float2* dL_dmean2D,
 		float4* dL_dconic2D,
 		float* dL_dopacity,
-		float* dL_dcolors,
-		float* dL_dinvdepths);
+		float* dL_dphasor,
+		float* dL_ddistance);
 
+	template <int V, typename RotationModel>
 	void preprocess(
-		int P, int D, int M,
-		const float3* means,
-		const int* radii,
-		const float* dc,
+		int P, int D, int M, int W, int H,
+		const glm::vec3* micpos,
+		const float* means5D,
 		const float* shs,
-		const bool* clamped,
 		const float* opacities,
-		const glm::vec3* scales,
-		const glm::vec4* rotations,
+		const float* scales,
+		const RotationModel* rotations,
 		const float scale_modifier,
-		const float* cov3Ds,
-		const float* view,
-		const float* proj,
-		const float focal_x, float focal_y,
-		const float tan_fovx, float tan_fovy,
-		const glm::vec3* campos,
-		const float3* dL_dmean2D,
+		const float* clamped,
+		const int* radii,
+		const float2* dL_dmean2D,
 		const float* dL_dconics,
-		const float* dL_dinvdepth,
+		const float* dL_ddistance,
 		float* dL_dopacity,
-		glm::vec3* dL_dmeans,
-		float* dL_dcolor,
-		float* dL_dcov3D,
-		float* dL_ddc,
+		float* dL_dmeans5D,
+		float* dL_dphasor,
 		float* dL_dsh,
-		glm::vec3* dL_dscale,
-		glm::vec4* dL_drot,
-		bool antialiasing);
+		float* dL_dscale,
+		float* dL_drot,
+		bool antialiasing,
+		float speed,
+		float cull_distance,
+		float sh_clamping_threshold);
 }
 
 #endif

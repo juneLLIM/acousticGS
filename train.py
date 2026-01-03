@@ -63,9 +63,8 @@ def training(config):
         print("No checkpoint path provided, starting from scratch.")
         gaussians.initialize(position_tx=train_dataset.positions_tx[0])
 
-    # Setup visualization
-    if config.logging.viz:
-
+    # Setup output
+    if config.logging.viz or config.logging.save:
         # Setup output directory
         output_dir = f'{config.path.output}/{now_str()}'
         print("Output folder: {}".format(output_dir))
@@ -75,6 +74,8 @@ def training(config):
         shutil.copy(config.path.config, os.path.join(output_dir, "config.yml"))
         print(f"Using config file: {config.path.config}")
 
+    # Setup visualization
+    if config.logging.viz:
         # Setup visualization directory
         vis_dir = os.path.join(output_dir, "test_vis")
         os.makedirs(vis_dir, exist_ok=True)
@@ -162,7 +163,11 @@ def training(config):
                     gaussians.reset_opacity()
 
             # Optimizer step
-            gaussians.optimizer.step()
+            if config.optimizer.type == "sparse_adam":
+                gaussians.optimizer.step(
+                    gaussians.visibility, gaussians.get_mean.shape[0])
+            else:
+                gaussians.optimizer.step()
             gaussians.optimizer.zero_grad(set_to_none=True)
 
             # Logging
@@ -227,7 +232,7 @@ def training(config):
                 )
 
             # Save model
-            if iteration % config.logging.save_freq == 0:
+            if iteration % config.logging.save_freq == 0 and config.logging.save:
                 print(f"\n[ITER {iteration}] Saving Checkpoint")
                 torch.save((gaussians.capture(), iteration), os.path.join(
                     output_dir, f"chkpnt{iteration}.pth"))

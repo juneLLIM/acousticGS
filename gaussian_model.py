@@ -48,7 +48,7 @@ class GaussianModel(nn.Module):
         self.denom = torch.empty(0)
         self.optimizer = None
         self.device = torch.device(config.device)
-        self.spatial_ratio = config.rendering.spatial_ratio
+        self.spatial_ratio = config.rendering.scale_modifier
         self.span = config.rendering.coord_max - config.rendering.coord_min
         self.window = torch.hann_window(
             self.config.audio.n_fft, device=self.device)
@@ -86,13 +86,35 @@ class GaussianModel(nn.Module):
         self.t_len = T
         self.f_len = M
 
+        self.rasterizer = GaussianRasterizer(
+            config, T, M, self.normalize_speed(self.config.rendering.speed))
+
     def forward(self, position_rx, network_view=None, position_tx=None):
         query_points = self.normalize_points(position_rx)
-        return self.render_signal_at_points(query_points)
+
+        stft, radii = self.rasterizer(
+            query_points,
+            self.get_xyztf,
+            self.get_features.contiguous(),
+            self.get_opacity,
+            self.get_scaling,
+            self._rotation,
+            self.active_sh_degree
+        )
+
+        self.visibility = (radii > 0).any(dim=0)
+
+        stft = stft.transpose(-1, -2)
+
+        signal = torch.istft(
+            stft, n_fft=self.config.audio.n_fft, hop_length=self.config.audio.hop_length,
+            window=self.window, length=self.seq_len)
+
+        return signal
 
     def backward(self, total_loss):
         total_loss.backward()
-        self.add_densification_stats(self.update_filter)
+        self.add_densification_stats(self.visibility)
 
     def capture(self):
         model_data = [
@@ -221,7 +243,7 @@ class GaussianModel(nn.Module):
 
         count = self.config.model.initial_points
 
-        # Initialize mean, scaling(small scales), rotation(identity quaternions or rotors)
+        # Initialize mean, scaling(small scales), rotation(identity quaternions or bivectors)
         if self.gaussian_dim == 3:
             mean = (torch.rand(count, 3, device=self.device)
                     * 2 - 1) * self.spatial_ratio
@@ -334,7 +356,7 @@ class GaussianModel(nn.Module):
         t = t / self.t_len * 2 - 1
         f = f / self.f_len * 2 - 1
 
-        # Initialize scaling(small scales) and rotation(identity quaternions or rotors)
+        # Initialize scaling(small scales) and rotation(identity quaternions or bivectors)
         if self.gaussian_dim == 3:
             scales = torch.full((count, 3), 0.01, device=self.device).log()
             rots = torch.zeros((count, 4), device=self.device)
@@ -404,10 +426,7 @@ class GaussianModel(nn.Module):
         if optimizer_type == "default" or optimizer_type == "adam":
             self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
         elif optimizer_type == "sparse_adam":
-            try:
-                self.optimizer = SparseGaussianAdam(l, lr=0.0, eps=1e-15)
-            except:
-                self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
+            self.optimizer = SparseGaussianAdam(l, lr=0.0, eps=1e-15)
         self.mean_scheduler_args = get_expon_lr_func(lr_init=self.config.optimizer.position_lr_init,
                                                      lr_final=self.config.optimizer.position_lr_final,
                                                      lr_delay_mult=self.config.optimizer.position_lr_delay_mult,
