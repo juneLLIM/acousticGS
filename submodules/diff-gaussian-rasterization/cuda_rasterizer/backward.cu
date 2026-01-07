@@ -151,7 +151,7 @@ __device__ void project_and_conic(
 	const float scale_modifier,
 	const float speed,
 	const float cull_distance,
-	bool antialiasing,
+	float antialiasing,
 	const float2* dL_dmean2D,
 	const float* dL_dconic,
 	const float* dL_ddistance,
@@ -332,85 +332,68 @@ __device__ void project_and_conic(
 
 		// Conic Gradient (dL_dconic -> dL_dC)
 		{
-			const float h_var = 0.3f;
-			float cov_x_prime = cov.x + h_var;
-			float cov_z_prime = cov.z + h_var;
-			float cov_y = cov.y;
+			float c_xx = cov.x;
+			float c_xy = cov.y;
+			float c_yy = cov.z;
+			float det = c_xx * c_yy - c_xy * c_xy;
 
-			float det_prime = cov_x_prime * cov_z_prime - cov_y * cov_y;
-			float det_inv = 1.0f / det_prime;
-			float common_factor = -det_inv * det_inv;
+			if(det <= 1e-6f) return;
 
-			float h_scaling = 1.0f;
+			float d_inside_root = 0.f;
 
-			// =================================================================
-			// Antialiasing gradient component
-			// =================================================================
-			// float d_scaling_dcovx = 0.0f;
-			// float d_scaling_dcovy = 0.0f;
-			// float d_scaling_dcovz = 0.0f;
+			if(antialiasing > 0.0f) {
 
-			// if(antialiasing) {
-			// 	float det_raw = cov.x * cov.z - cov.y * cov.y;
-			// 	float inside_root = max(0.000025f, det_raw * det_inv);
-			// 	h_scaling = sqrt(inside_root);
+				float h_var = antialiasing;
 
-			// 	if(inside_root > 0.000025f) {
-			// 		float s_inv_2 = 0.5f / h_scaling;
-			// 		float factor = s_inv_2 * det_inv;
-			// 		float ratio = inside_root;
+				// Backup values for correct differentiation (fixed from original code)
+				const float x = c_xx;
+				const float y = c_yy;
+				const float z = c_xy;
+				const float w = h_var;
 
-			// 		d_scaling_dcovx = factor * (cov.z - ratio * cov_z_prime);
-			// 		d_scaling_dcovy = factor * (-2.0f * cov.y - ratio * (-2.0f * cov.y));
-			// 		d_scaling_dcovz = factor * (cov.x - ratio * cov_x_prime);
-			// 	}
-			// }
+				c_xx += h_var;
+				c_yy += h_var;
 
+				const float det_cov_plus_h_cov = c_xx * c_yy - c_xy * c_xy;
+				const float h_convolution_scaling = sqrt(max(0.25f, det / det_cov_plus_h_cov)); // max for numerical stability (0.000025f in original GS)
+				const float dL_dopacity_v = dL_dopacity[idx];
+				const float d_h_convolution_scaling = dL_dopacity_v * opacities[idx];
+				dL_dopacity[idx] *= h_convolution_scaling;
+				d_inside_root = (det / det_cov_plus_h_cov) <= 0.25f ? 0.f : d_h_convolution_scaling / (2 * h_convolution_scaling);
+				det = det_cov_plus_h_cov;
 
-			// float dL_dAlpha_final = 0.0f;
-			// if(dL_dopacity) {
-			// 	dL_dAlpha_final = dL_dopacity[idx];
-			// 	dL_dopacity[idx] = dL_dAlpha_final * h_scaling;
-			// }
-
-			// if(antialiasing && opacities) {
-			// 	const float opacity = opacities[idx];
-			// 	float common_grad = dL_dAlpha_final * opacity;
-			// 	dL_dC.x += common_grad * d_scaling_dcovx;
-			// 	dL_dC.y += common_grad * d_scaling_dcovy;
-			// 	dL_dC.z += common_grad * d_scaling_dcovz;
-			// }
-			// =================================================================
-
-			// =================================================================
-			// Original version
-			// =================================================================
-			if(antialiasing) {
-				float det_raw = cov.x * cov.z - cov.y * cov.y;
-				h_scaling = sqrt(max(0.000025f, det_raw * det_inv));
+				// https://www.wolframalpha.com/input?i=d+%28%28x*y+-+z%5E2%29%2F%28%28x%2Bw%29*%28y%2Bw%29+-+z%5E2%29%29+%2Fdx
+				// https://www.wolframalpha.com/input?i=d+%28%28x*y+-+z%5E2%29%2F%28%28x%2Bw%29*%28y%2Bw%29+-+z%5E2%29%29+%2Fdz
+				const float denom_f = d_inside_root / sq(w * w + w * (x + y) + x * y - z * z);
+				const float dL_dx = w * (w * y + y * y + z * z) * denom_f;
+				const float dL_dy = w * (w * x + x * x + z * z) * denom_f;
+				const float dL_dz = -2.f * w * z * (w + x + y) * denom_f;
+				dL_dC.x += dL_dx;
+				dL_dC.y += dL_dy;
+				dL_dC.z += dL_dz;
 			}
 
-			if(dL_dopacity) dL_dopacity[idx] *= h_scaling;
-
+			float det_inv = 1.0f / det;
+			float common_factor = -det_inv * det_inv;
 
 			float4 dL_dconic_val = ((const float4*)dL_dconic)[idx];
 			float dL_dConicX = dL_dconic_val.x;
 			float dL_dConicY = dL_dconic_val.y;
 			float dL_dConicZ = dL_dconic_val.z;
 
-			float dIdy = common_factor * (-2.0f * cov_y);
+			float dIdy = common_factor * (-2.0f * c_xy);
 
-			dL_dC.x = dL_dConicX * (cov_z_prime * common_factor * cov_z_prime) +
-				dL_dConicY * (-cov_y * common_factor * cov_z_prime) +
-				dL_dConicZ * (det_inv + cov_x_prime * common_factor * cov_z_prime);
+			dL_dC.x += dL_dConicX * (c_yy * common_factor * c_yy) +
+				dL_dConicY * (-c_xy * common_factor * c_yy) +
+				dL_dConicZ * (det_inv + c_xx * common_factor * c_yy);
 
-			dL_dC.y = dL_dConicX * (cov_z_prime * dIdy) +
-				dL_dConicY * (-det_inv - cov_y * dIdy) +
-				dL_dConicZ * (cov_x_prime * dIdy);
+			dL_dC.y += dL_dConicX * (c_yy * dIdy) +
+				dL_dConicY * (-det_inv - c_xy * dIdy) +
+				dL_dConicZ * (c_xx * dIdy);
 
-			dL_dC.z = dL_dConicX * (det_inv + cov_z_prime * common_factor * cov_x_prime) +
-				dL_dConicY * (-cov_y * common_factor * cov_x_prime) +
-				dL_dConicZ * (cov_x_prime * common_factor * cov_x_prime);
+			dL_dC.z += dL_dConicX * (det_inv + c_yy * common_factor * c_xx) +
+				dL_dConicY * (-c_xy * common_factor * c_xx) +
+				dL_dConicZ * (c_xx * common_factor * c_xx);
 		}
 
 		// Covariance backpropagation (dL_dC -> dL_dj, dL_dscales, dL_drotations)
@@ -502,7 +485,7 @@ __global__ void preprocessCUDA(
 	float* dL_dopacity,
 	const float* dL_dconic,
 	const float* dL_ddistance,
-	bool antialiasing,
+	float antialiasing,
 	float speed,
 	float cull_distance) {
 	auto idx = cg::this_grid().thread_rank();
@@ -726,7 +709,7 @@ void BACKWARD::preprocess(
 	float* dL_dsh,
 	float* dL_dscale,
 	float* dL_drot,
-	bool antialiasing,
+	float antialiasing,
 	float speed,
 	float cull_distance,
 	float sh_clamping_threshold) {
@@ -777,7 +760,7 @@ template void BACKWARD::preprocess<V, RotationModel>( \
 	float* dL_dsh, \
 	float* dL_dscale, \
 	float* dL_drot, \
-	bool antialiasing, \
+	float antialiasing, \
 	float speed, \
 	float cull_distance, \
 	float sh_clamping_threshold)

@@ -42,7 +42,7 @@ namespace FORWARD
 		float4* conic_opacity,
 		const dim3 grid,
 		uint32_t* tiles_touched,
-		bool antialiasing,
+		float antialiasing,
 		float speed,
 		float cull_distance,
 		float sh_clamping_threshold);

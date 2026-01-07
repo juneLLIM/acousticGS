@@ -271,7 +271,7 @@ __global__ void preprocessCUDA(
 	float4* conic_opacity,
 	const dim3 grid,
 	uint32_t* tiles_touched,
-	bool antialiasing,
+	float antialiasing,
 	float speed,
 	float cull_distance,
 	float sh_clamping_threshold) {
@@ -294,19 +294,20 @@ __global__ void preprocessCUDA(
 
 	if(V == 4) { // TODO: Only implementing V=4 for now
 		// Compute Conic
-		float h_var = 0.3f;
-		float det_cov = cov.x * cov.z - cov.y * cov.y;
-		cov.x += h_var;
-		cov.z += h_var;
-		const float det_cov_plus_h_cov = cov.x * cov.z - cov.y * cov.y;
+		float det = cov.x * cov.z - cov.y * cov.y;
 		float h_convolution_scaling = 1.0f;
-		if(antialiasing)
-			h_convolution_scaling = sqrt(max(0.000025f, det_cov / det_cov_plus_h_cov)); // max for numerical stability
+
+		if(antialiasing > 0.0f) {
+			float h_var = antialiasing;
+			cov.x += h_var;
+			cov.z += h_var;
+			const float det_cov_plus_h_cov = cov.x * cov.z - cov.y * cov.y;
+			h_convolution_scaling = sqrt(max(0.25f, det / det_cov_plus_h_cov)); // max for numerical stability (0.000025f in original GS)
+			det = det_cov_plus_h_cov;
+		}
 
 		// Invert covariance (EWA algorithm)
-		const float det = det_cov_plus_h_cov;
-
-		if(det == 0.0f)
+		if(det <= 1e-6f)
 			return;
 		float det_inv = 1.f / det;
 		float3 conic = {cov.z * det_inv, -cov.y * det_inv, cov.x * det_inv};
@@ -532,7 +533,7 @@ void FORWARD::preprocess(
 	float4* conic_opacity,
 	const dim3 grid,
 	uint32_t* tiles_touched,
-	bool antialiasing,
+	float antialiasing,
 	float speed,
 	float cull_distance,
 	float sh_clamping_threshold) {
@@ -579,7 +580,7 @@ template void FORWARD::preprocess<V, RotationModel>( \
 	float4* conic_opacity, \
 	const dim3 grid, \
 	uint32_t* tiles_touched, \
-	bool antialiasing, \
+	float antialiasing, \
 	float speed, \
 	float cull_distance, \
 	float sh_clamping_threshold)

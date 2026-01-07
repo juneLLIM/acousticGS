@@ -63,7 +63,7 @@ namespace BACKWARD
 		float* dL_dsh,
 		float* dL_dscale,
 		float* dL_drot,
-		bool antialiasing,
+		float antialiasing,
 		float speed,
 		float cull_distance,
 		float sh_clamping_threshold);
