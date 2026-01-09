@@ -5,7 +5,7 @@ device: "cuda:1"
 
 # Data and Model Paths
 path:
-  data: "data/MeshRIR"  # Path to the dataset
+  data: "~/data/dataset/MeshRIR/S1-M3969"  # Path to the dataset
   dataset_type: "MeshRIR" # Type of dataset
   output: "output/default"  # Path to the output directory
   checkpoint: null  # Path to the checkpoint

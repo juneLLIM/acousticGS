@@ -22,17 +22,10 @@ class WaveDataset(Dataset):  # Renamed from WaveLoader
         self.positions_tx = []
         self.rotations_tx = []
 
-        self.wave_max = float('-inf')
-        self.wave_min = float('inf')
-        self.position_max = np.array(
-            [float('-inf'), float('-inf'), float('-inf')])
-        self.position_min = np.array(
-            [float('inf'), float('inf'), float('inf')])
-
         self.dataset_type = config.path.dataset_type
         self.eval = eval
 
-        # load three different datasets seperately
+        # load three different datasets separately
         if self.dataset_type == 'MeshRIR':
             self.load_mesh_rir(config.path.data, eval,
                                config.audio.seq_len, config.audio.fs)
@@ -63,7 +56,43 @@ class WaveDataset(Dataset):  # Renamed from WaveLoader
         """ Load MeshRIR datasets
         """
         down_sample_rate = 48000 // fs
-        self.default_st_idx = int(9100 / down_sample_rate)
+
+        rx_pos = np.load(os.path.join(base_folder, 'pos_mic.npy'))
+        tx_pos = np.load(os.path.join(base_folder, 'pos_src.npy'))[0]
+
+        try:
+            dists = np.linalg.norm(rx_pos - tx_pos, axis=1)
+            min_dist_idx = np.argmin(dists)
+            min_dist = dists[min_dist_idx]
+            fname = f'ir_{min_dist_idx}.npy'
+
+            for subdir in ['train', 'test']:
+                full_path = os.path.join(base_folder, subdir, fname)
+                if os.path.exists(full_path):
+                    break
+
+            full_audio = np.load(full_path)[0]
+            observed_peak_idx = np.argmax(np.abs(full_audio))
+
+            # Time-of-flight (samples)
+            tof_samples = (min_dist / 343.0) * 48000.0
+
+            # System latency = actual onset - theoretical flight time
+            latency_samples = observed_peak_idx - tof_samples
+
+            if latency_samples < 0:
+                print(
+                    f"Warning: Calculated latency is negative ({latency_samples}). Using safe default 8300.")
+                latency_samples = 8300
+            else:
+                print(
+                    f"Computed Latency: {latency_samples:.2f} samples (at 48kHz)")
+
+            self.default_st_idx = int(latency_samples / down_sample_rate)
+        except Exception as e:
+            print(
+                f"Warning: Could not find RIR file for closest mic. Using safe default 8300. Error: {e}")
+            self.default_st_idx = int(8300 / down_sample_rate)
 
         if eval:
             wave_folder = os.path.join(base_folder, 'test')
@@ -72,10 +101,6 @@ class WaveDataset(Dataset):  # Renamed from WaveLoader
 
         filenames = [f for f in os.listdir(wave_folder) if f.endswith('.npy')]
         filenames.sort()
-
-        rx_pos = np.load(os.path.join(base_folder, 'pos_mic.npy'))
-        tx_pos = np.load(os.path.join(base_folder, 'pos_src.npy'))[0]
-
         for filename in filenames:
             audio_data = np.load(os.path.join(wave_folder, filename))[
                 0, ::down_sample_rate]  # first resample the IR data
@@ -85,8 +110,6 @@ class WaveDataset(Dataset):  # Renamed from WaveLoader
             file_ind = int(filename.split('_')[1].split('.')[0])
             position_rx = rx_pos[file_ind]
             position_tx = tx_pos
-
-            self.update_min_max(audio_data, position_rx)
 
             self.wave_chunks.append(audio_data)
             self.positions_rx.append(position_rx)
@@ -109,8 +132,6 @@ class WaveDataset(Dataset):  # Renamed from WaveLoader
 
             position_rx = meta_data['position_rx']
             position_tx = meta_data['position_tx']
-
-            self.update_min_max(audio_data, position_rx)
 
             self.wave_chunks.append(audio_data)
             self.positions_rx.append(position_rx)
@@ -162,12 +183,6 @@ class WaveDataset(Dataset):  # Renamed from WaveLoader
         rotation_tx = quaternion_to_direction_vector(rotation_tx)
         position_tx = np.array(tx_info[4:])[[0, 2, 1]]
         return position_tx, rotation_tx
-
-    def update_min_max(self, audio_data, position_rx):
-        self.wave_max = max(self.wave_max, audio_data.max())
-        self.wave_min = min(self.wave_min, audio_data.min())
-        self.position_max = np.maximum(self.position_max, position_rx)
-        self.position_min = np.minimum(self.position_min, position_rx)
 
     def __len__(self):
         return self.iteration

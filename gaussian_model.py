@@ -330,8 +330,7 @@ class GaussianModel(nn.Module):
             absorption=0.2,
             air_absorption=True,
             max_order=3,
-            ray_tracing=False,
-            use_rand_ism=True)
+            ray_tracing=False)
         pos_src = position_tx - self.config.rendering.coord_min
         room.add_source(pos_src)
         room.add_microphone((mean.T.cpu() + 1) / 2 * self.span)

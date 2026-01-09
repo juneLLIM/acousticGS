@@ -1,4 +1,4 @@
-data="/home/data/MeshRIR"
+data="~/data/dataset/MeshRIR/S1-M3969"
 base=$(pwd)
 mkdir -p $data
 cd $data
