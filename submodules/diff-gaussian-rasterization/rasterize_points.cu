@@ -66,6 +66,7 @@ RasterizeGaussiansCUDA(
 	const float speed,
 	const float cull_distance,
 	const float sh_clamping_threshold,
+	const int seq_len,
 	const bool debug) {
 	if(means5D.ndimension() != 2 || means5D.size(1) != 5) {
 		AT_ERROR("means5D must have dimensions (num_points, 5)");
@@ -121,6 +122,7 @@ RasterizeGaussiansCUDA(
 			speed,
 			cull_distance,
 			sh_clamping_threshold,
+			seq_len,
 			debug);
 
 		rendered = std::get<0>(tup);
@@ -152,6 +154,7 @@ RasterizeGaussiansBackwardCUDA(
 	const float speed,
 	const float cull_distance,
 	const float sh_clamping_threshold,
+	const int seq_len,
 	const bool debug) {
 
 	const int P = means5D.size(0);
@@ -206,6 +209,7 @@ RasterizeGaussiansBackwardCUDA(
 			speed,
 			cull_distance,
 			sh_clamping_threshold,
+			seq_len,
 			debug);
 	}
 

@@ -32,6 +32,7 @@ RasterizeGaussiansCUDA(
 	const float speed,
 	const float cull_distance,
 	const float sh_clamping_threshold,
+	const int seq_len,
 	const bool debug);
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
@@ -57,6 +58,7 @@ RasterizeGaussiansBackwardCUDA(
 	const float speed,
 	const float cull_distance,
 	const float sh_clamping_threshold,
+	const int seq_len,
 	const bool debug);
 
 void adamUpdate(

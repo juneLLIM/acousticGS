@@ -301,6 +301,7 @@ std::tuple<int, int> CudaRasterizer::Rasterizer::forward(
 	float speed,
 	float cull_distance,
 	float sh_clamping_threshold,
+	int seq_len,
 	bool debug) {
 
 	size_t chunk_size = required<GeometryState>(P);
@@ -431,7 +432,9 @@ std::tuple<int, int> CudaRasterizer::Rasterizer::forward(
 		imgState.n_contrib,
 		imgState.max_contrib,
 		out_stft,
-		geomState.distances), debug)
+		geomState.distances,
+		speed,
+		seq_len), debug)
 
 		CHECK_CUDA(cudaMemcpy(imgState.pixel_phasors, out_stft, sizeof(float) * W * H * NUM_CHANNELS, cudaMemcpyDeviceToDevice), debug);
 	return std::make_tuple(num_rendered, bucket_sum);
@@ -468,6 +471,7 @@ void CudaRasterizer::Rasterizer::backward(
 	float speed,
 	float cull_distance,
 	float sh_clamping_threshold,
+	const int seq_len,
 	bool debug) {
 	GeometryState geomState = GeometryState::fromChunk(geom_buffer, P);
 	BinningState binningState = BinningState::fromChunk(binning_buffer, R);
@@ -505,7 +509,9 @@ void CudaRasterizer::Rasterizer::backward(
 		(float4*)dL_dconic,
 		dL_dopacity,
 		dL_dphasor,
-		dL_ddistance), debug)
+		dL_ddistance,
+		speed,
+		seq_len), debug)
 
 
 #define PREPROCESS(V, RotationModel) \

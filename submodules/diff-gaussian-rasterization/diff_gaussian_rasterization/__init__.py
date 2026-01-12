@@ -46,6 +46,7 @@ class _RasterizeGaussians(torch.autograd.Function):
             speed,
             config.rendering.cull_distance,
             config.rendering.sh_clamping_threshold,
+            config.audio.seq_len,
             config.logging.cuda)
 
         # Keep relevant tensors for backward
@@ -92,6 +93,7 @@ class _RasterizeGaussians(torch.autograd.Function):
             speed,
             config.rendering.cull_distance,
             config.rendering.sh_clamping_threshold,
+            config.audio.seq_len,
             config.logging.cuda)
 
         grads = (

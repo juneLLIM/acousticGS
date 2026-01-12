@@ -61,7 +61,9 @@ namespace FORWARD
 		uint32_t* n_contrib,
 		uint32_t* max_contrib,
 		float* out_stft,
-		float* distances);
+		float* distances,
+		const float speed,
+		const int seq_len);
 }
 
 

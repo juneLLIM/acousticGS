@@ -528,7 +528,9 @@ PerGaussianRenderCUDA(
 	float4* __restrict__ dL_dconic2D,
 	float* __restrict__ dL_dopacity,
 	float* __restrict__ dL_dphasor,
-	float* __restrict__ dL_ddistance
+	float* __restrict__ dL_ddistance,
+	const float speed,
+	const int seq_len
 ) {
 	// global_bucket_idx = warp_idx
 	auto block = cg::this_thread_block();
@@ -565,11 +567,13 @@ PerGaussianRenderCUDA(
 	float4 con_o = {0.0f, 0.0f, 0.0f, 0.0f};
 	float c[C] = {0.0f};
 	float decay = 0.0f;
+	float dist = 0.0f;
 	if(valid_splat) {
 		gaussian_idx = point_list[splat_idx_global];
 		xy = means2D[gaussian_idx];
 		con_o = conic_opacity[gaussian_idx];
-		decay = 1.0f / distances[gaussian_idx];
+		dist = distances[gaussian_idx];
+		decay = 1.0f / dist;
 		for(int ch = 0; ch < C; ++ch)
 			c[ch] = phasors[gaussian_idx * C + ch];
 	}
@@ -643,14 +647,47 @@ PerGaussianRenderCUDA(
 			if(alpha < 1.0f / 255.0f) continue;
 			const float weight = alpha * T;
 
-			// add the gradient contribution of this pixel's phasor to the gaussian
+			// add the gradient contribution of this pixel's phasor to the gaussian with phase shift
+			float phase_unit = (float)seq_len * 0.25f;
+			float freq = pixf.y / (float)H;
+			float delay = dist / speed;
+			float phase_shift = -2.0f * 3.1415926535f * freq * delay * phase_unit;
+			float cos_val = cosf(phase_shift);
+			float sin_val = sinf(phase_shift);
+			float dphi_ddist = -2.0f * 3.1415926535f * freq * (1.0f / speed) * phase_unit;
+
 			float dL_dalpha = 0.0f;
-			for(int ch = 0; ch < C; ++ch) {
-				ar[ch] += weight * c[ch]; // TODO: check
-				const float& dL_dchannel = dL_dpixel[ch];
-				Register_dL_dphasor[ch] += weight * dL_dchannel;
-				dL_dalpha += ((c[ch] * T) - (1.0f / (1.0f - alpha)) * (-ar[ch])) * dL_dchannel;
+			float dL_dphi_pix = 0.0f;
+			for(int ch = 0; ch < C; ch += 2) {
+				float c_re = c[ch];
+				float c_im = c[ch + 1];
+				float rot_re = c_re * cos_val - c_im * sin_val;
+				float rot_im = c_re * sin_val + c_im * cos_val;
+
+				ar[ch] += weight * rot_re;
+				ar[ch + 1] += weight * rot_im;
+
+				const float& dL_dre = dL_dpixel[ch];
+				const float& dL_dim = dL_dpixel[ch + 1];
+
+				Register_dL_dphasor[ch] += weight * (dL_dre * cos_val + dL_dim * sin_val);
+				Register_dL_dphasor[ch + 1] += weight * (dL_dim * cos_val - dL_dre * sin_val);
+
+				dL_dalpha += ((rot_re * T) - (1.0f / (1.0f - alpha)) * (-ar[ch])) * dL_dre;
+				dL_dalpha += ((rot_im * T) - (1.0f / (1.0f - alpha)) * (-ar[ch + 1])) * dL_dim;
+
+				dL_dphi_pix += weight * (dL_dim * rot_re - dL_dre * rot_im);
 			}
+
+			// Frequency-Aware Gradient Scaling for Stability:
+			// 1. High-frequency phase gradients are prone to wrapping and explosion.
+			// 2. We apply a scaling factor proportional to 1/(freq + epsilon) to dampen high-freq influence.
+			// 3. We also keep the global damper (1e-4f) to balance spatial vs phase gradients.
+			// Ideally, low freq alignment happens first, then high freq follows.
+
+			float freq_damp = 1.0f / (1.0f + 100.0f * freq); // Stronger damping for higher frequencies
+			Register_dL_ddistance += max(-0.1f, min(0.1f, dL_dphi_pix * dphi_ddist * freq_damp * 1e-3f));
+
 
 			// Helpful reusable temporary variables
 			const float dL_dG = decay * con_o.w * dL_dalpha;
@@ -793,7 +830,9 @@ void BACKWARD::render(
 	float4* dL_dconic2D,
 	float* dL_dopacity,
 	float* dL_dphasor,
-	float* dL_ddistance) {
+	float* dL_ddistance,
+	const float speed,
+	const int seq_len) {
 	const int THREADS = 32;
 	PerGaussianRenderCUDA<NUM_CHANNELS> << <((B * 32) + THREADS - 1) / THREADS, THREADS >> > (
 		ranges,
@@ -814,6 +853,8 @@ void BACKWARD::render(
 		dL_dconic2D,
 		dL_dopacity,
 		dL_dphasor,
-		dL_ddistance
+		dL_ddistance,
+		speed,
+		seq_len
 		);
 }

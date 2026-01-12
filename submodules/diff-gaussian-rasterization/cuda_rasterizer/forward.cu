@@ -297,6 +297,7 @@ __global__ void preprocessCUDA(
 		float det = cov.x * cov.z - cov.y * cov.y;
 		float h_convolution_scaling = 1.0f;
 
+		// Antialiasing with configurable parameter (fixed from original GS)
 		if(antialiasing > 0.0f) {
 			float h_var = antialiasing;
 			cov.x += h_var;
@@ -356,7 +357,9 @@ renderCUDA(
 	uint32_t* __restrict__ n_contrib,
 	uint32_t* __restrict__ max_contrib,
 	float* __restrict__ out_stft,
-	const float* __restrict__ distances) {
+	const float* __restrict__ distances,
+	const float speed,
+	const int seq_len) {
 	// Identify current tile and associated min/max pixel range.
 	auto block = cg::this_thread_block();
 	uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
@@ -437,7 +440,7 @@ renderCUDA(
 			float2 tf = collected_tf[j];
 			float2 d = {tf.x - pixf.x, tf.y - pixf.y};
 			float4 con_o = collected_conic_opacity[j];
-			float decay = 1 / collected_dist[j];
+			float decay = 1 / collected_dist[j]; // decay term added
 			float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
 			if(power > 0.0f)
 				continue;
@@ -446,7 +449,8 @@ renderCUDA(
 			// Obtain alpha by multiplying with Gaussian opacity
 			// and its exponential falloff from mean.
 			// Avoid numerical instabilities (see paper appendix). 
-			float alpha = min(0.99f, decay * con_o.w * exp(power));
+			float alpha = min(0.99f, decay * con_o.w * exp(power)); // decay term added
+			// float alpha = min(0.99f, con_o.w * exp(power)); // no decay term
 			if(alpha < 1.0f / 255.0f)
 				continue;
 			float test_T = T * (1 - alpha);
@@ -456,8 +460,22 @@ renderCUDA(
 			}
 
 			// Eq. (3) from 3D Gaussian splatting paper.
-			for(int ch = 0; ch < CHANNELS; ch++)
-				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
+			// with modification adding phase shift on complex features
+			float phase_unit = (float)seq_len * 0.25f;
+			float freq = pixf.y / (float)H;  // 0 ~ 1
+			float delay = collected_dist[j] / speed;
+			float phase_shift = -2.0f * 3.1415926535f * freq * delay * phase_unit;
+			float cos_val = cosf(phase_shift);
+			float sin_val = sinf(phase_shift);
+
+#pragma unroll
+			for(int ch = 0; ch < CHANNELS; ch += 2) {
+				float val_real = features[collected_id[j] * CHANNELS + ch];
+				float val_imag = features[collected_id[j] * CHANNELS + ch + 1];
+
+				C[ch] += (val_real * cos_val - val_imag * sin_val) * alpha * T;
+				C[ch + 1] += (val_real * sin_val + val_imag * cos_val) * alpha * T;
+			}
 
 			T = test_T;
 
@@ -498,7 +516,9 @@ void FORWARD::render(
 	uint32_t* n_contrib,
 	uint32_t* max_contrib,
 	float* out_stft,
-	float* distances) {
+	float* distances,
+	const float speed,
+	const int seq_len) {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
 		ranges,
 		point_list,
@@ -511,7 +531,9 @@ void FORWARD::render(
 		n_contrib,
 		max_contrib,
 		out_stft,
-		distances);
+		distances,
+		speed,
+		seq_len);
 }
 
 template <int V, typename RotationModel>

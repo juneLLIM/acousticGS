@@ -41,6 +41,7 @@ namespace CudaRasterizer
 			float speed,
 			float cull_distance,
 			float sh_clamping_threshold,
+			int seq_len,
 			bool debug = false);
 
 		static void backward(
@@ -72,6 +73,7 @@ namespace CudaRasterizer
 			float speed,
 			float cull_distance,
 			float sh_clamping_threshold,
+			const int seq_len,
 			bool debug);
 	};
 };
