@@ -25,15 +25,18 @@ class WaveDataset(Dataset):  # Renamed from WaveLoader
         self.dataset_type = config.path.dataset_type
         self.eval = eval
 
+        # Expand user path (~) if present
+        data_path = os.path.expanduser(config.path.data)
+
         # load three different datasets separately
         if self.dataset_type == 'MeshRIR':
-            self.load_mesh_rir(config.path.data, eval,
+            self.load_mesh_rir(data_path, eval,
                                config.audio.seq_len, config.audio.fs)
         elif self.dataset_type == 'RAF':
-            self.load_raf(config.path.data, eval,
+            self.load_raf(data_path, eval,
                           config.audio.seq_len, config.audio.fs)
         elif self.dataset_type == 'Simu':
-            self.load_simu(config.path.data, eval,
+            self.load_simu(data_path, eval,
                            config.audio.seq_len, config.audio.fs)
         else:
             raise ValueError("Unsupported dataset type")

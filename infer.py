@@ -6,9 +6,10 @@ from torch.utils.data import DataLoader, Subset
 from gaussian_model import GaussianModel
 from datasets import WaveDataset
 from utils.criterion import Criterion
+from utils.general_utils import safe_state
 from utils.metric import metric_cal
 from utils.config import load_config
-from utils.visualize import visualize_all
+from utils.visualize import visualize_all, visualize_signal
 
 
 def inference(config):
@@ -36,8 +37,8 @@ def inference(config):
     # Load weights from checkpoint if provided
     if config.path.checkpoint:
         print(f"Checkpoint path: {config.path.checkpoint}")
-        (model_params, first_iter) = torch.load(
-            config.path.checkpoint, weights_only=False)
+        (model_params, iter) = torch.load(
+            config.path.checkpoint, weights_only=False, map_location=device)
         gaussians.restore(model_params)
     else:
         print("No checkpoint path provided, using randomly initialized model.")
@@ -50,6 +51,7 @@ def inference(config):
     final_metric = {}
 
     with torch.no_grad():
+
         for i, batch in enumerate(test_loader):
             gt_time, position_rx, position_tx = batch
 
@@ -79,22 +81,34 @@ def inference(config):
                 loss_dict, gt_freq, pred_freq = criterion(
                     pred_time, gt_time.to(device))
 
-                for j in range(len(batch)):
+                if i == 0:
 
                     visualize_all(
-                        pred_freq=pred_freq[j],
-                        gt_freq=gt_freq[j],
-                        pred_time=pred_time[j],
-                        gt_time=gt_time[j],
-                        position_rx=position_rx[j],
-                        position_tx=position_tx[j],
+                        pred_freq=pred_freq[0, :],
+                        gt_freq=gt_freq[0, :],
+                        pred_time=pred_time[0, :],
+                        gt_time=gt_time[0, :],
+                        position_rx=position_rx[0, :],
+                        position_tx=position_tx[0, :],
                         mode_set="test",
                         save_dir=output_dir,
-                        iteration=i * config.training.batchsize + j,
+                        iteration=f"{iter}_{0}",
                         gaussians=gaussians,
                         sr=config.audio.fs,
                         coord_min=config.rendering.coord_min,
                         coord_max=config.rendering.coord_max,
+                    )
+
+                for j in range(len(position_rx)):
+
+                    visualize_signal(
+                        pred_freq=pred_freq[j, :],
+                        gt_freq=gt_freq[j, :],
+                        pred_time=pred_time[j, :],
+                        gt_time=gt_time[j, :],
+                        mode_set="test",
+                        save_path=os.path.join(
+                            output_dir, f"signal_iter_{iter}_{i * config.training.batchsize + j}.png")
                     )
 
         final_metric = {
@@ -124,4 +138,9 @@ def inference(config):
 
 if __name__ == "__main__":
     config = load_config()
+
+    safe_state(silent=not config.logging.log,
+               device=torch.device(config.device))
+    print()
+
     inference(config)
