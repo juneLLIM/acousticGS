@@ -27,7 +27,7 @@ namespace BACKWARD
 		const uint32_t* point_list,
 		const uint32_t* per_bucket_tile_offset,
 		const uint32_t* bucket_to_tile,
-		const float* sampled_T, const float* sampled_ar,
+		const float* sampled_T, const float* sampled_ar, const float* sampled_additive,
 		const float2* means2D,
 		const float4* conic_opacity,
 		const float* phasors,
@@ -35,12 +35,15 @@ namespace BACKWARD
 		const uint32_t* n_contrib,
 		const uint32_t* max_contrib,
 		const float* pixel_phasors,
+		const float* pixel_additive,
 		const float* dL_dstft,
 		float2* dL_dmean2D,
 		float4* dL_dconic2D,
 		float* dL_dopacity,
 		float* dL_dphasor,
-		float* dL_ddistance);
+		float* dL_ddistance,
+		const bool* on_ray,
+		float cull_distance);
 
 	template <int V, typename RotationModel>
 	void preprocess(
@@ -63,6 +66,7 @@ namespace BACKWARD
 		float* dL_dsh,
 		float* dL_dscale,
 		float* dL_drot,
+		const bool* on_ray,
 		float antialiasing,
 		float speed,
 		float cull_distance,

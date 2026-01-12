@@ -107,7 +107,7 @@ __device__ bool project(
 	const float dist_sq = dx * dx + dy * dy + dz * dz;
 
 	// Distance culling
-	if(dist_sq < 1e-12f || dist_sq > cull_distance * cull_distance) return false;
+	if(dist_sq < 1e-12f) return false;
 
 	// Calulate distance and inverse distance
 	const float inv_dist = rsqrtf(dist_sq);
@@ -269,12 +269,15 @@ __global__ void preprocessCUDA(
 	float* distances,
 	float* phasors,
 	float4* conic_opacity,
+	bool* on_ray,
 	const dim3 grid,
 	uint32_t* tiles_touched,
 	float antialiasing,
 	float speed,
 	float cull_distance,
-	float sh_clamping_threshold) {
+	float sh_clamping_threshold,
+	const glm::vec3* source_pos,
+	float ray_threshold) {
 	auto idx = cg::this_grid().thread_rank();
 	if(idx >= P)
 		return;
@@ -287,6 +290,21 @@ __global__ void preprocessCUDA(
 	float2 mean2D;
 	float distance;
 	float3 cov;
+
+	// Calculate on_ray status
+	glm::vec3 pos = {means5D[5 * idx], means5D[5 * idx + 1], means5D[5 * idx + 2]};
+	glm::vec3 source = *source_pos;
+	glm::vec3 listener = *micpos;
+	glm::vec3 ray_dir = listener - source;
+	float len_sl = glm::length(ray_dir);
+	if(len_sl > 1e-6f) ray_dir = ray_dir / len_sl;
+
+	float v = glm::dot(pos - source, ray_dir);
+	glm::vec3 proj = source + v * ray_dir;
+	float dist_to_ray = glm::length(pos - proj);
+
+	bool is_on_ray = (dist_to_ray < ray_threshold && v > 0.0f && v < len_sl);
+	on_ray[idx] = is_on_ray;
 
 	bool valid = project<V, RotationModel>(idx, W, H, *micpos, means5D, scales, rotations, scale_modifier, speed, cull_distance, mean2D, distance, cov);
 
@@ -348,7 +366,7 @@ renderCUDA(
 	const uint2* __restrict__ ranges,
 	const uint32_t* __restrict__ point_list,
 	const uint32_t* __restrict__ per_tile_bucket_offset, uint32_t* __restrict__ bucket_to_tile,
-	float* __restrict__ sampled_T, float* __restrict__ sampled_ar,
+	float* __restrict__ sampled_T, float* __restrict__ sampled_ar, float* __restrict__ sampled_additive,
 	int W, int H,
 	const float2* __restrict__ means2D,
 	const float* __restrict__ features,
@@ -356,7 +374,10 @@ renderCUDA(
 	uint32_t* __restrict__ n_contrib,
 	uint32_t* __restrict__ max_contrib,
 	float* __restrict__ out_stft,
-	const float* __restrict__ distances) {
+	float* __restrict__ out_additive,
+	const float* __restrict__ distances,
+	float cull_distance,
+	const bool* __restrict__ on_ray) {
 	// Identify current tile and associated min/max pixel range.
 	auto block = cg::this_thread_block();
 	uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
@@ -393,12 +414,14 @@ renderCUDA(
 	__shared__ float2 collected_tf[BLOCK_SIZE];
 	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
 	__shared__ float collected_dist[BLOCK_SIZE];
+	__shared__ bool collected_on_ray[BLOCK_SIZE];
 
 	// Initialize helper variables
 	float T = 1.0f;
 	uint32_t contributor = 0;
 	uint32_t last_contributor = 0;
 	float C[CHANNELS] = {0};
+	float C_add[CHANNELS] = {0};
 
 	// Iterate over batches until all done or range is complete
 	for(int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE) {
@@ -415,6 +438,7 @@ renderCUDA(
 			collected_tf[block.thread_rank()] = means2D[coll_id];
 			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
 			collected_dist[block.thread_rank()] = distances[coll_id];
+			collected_on_ray[block.thread_rank()] = on_ray[coll_id];
 		}
 		block.sync();
 
@@ -425,6 +449,7 @@ renderCUDA(
 				sampled_T[(bbm * BLOCK_SIZE) + block.thread_rank()] = T;
 				for(int ch = 0; ch < CHANNELS; ++ch) {
 					sampled_ar[(bbm * BLOCK_SIZE * CHANNELS) + ch * BLOCK_SIZE + block.thread_rank()] = C[ch];
+					sampled_additive[(bbm * BLOCK_SIZE * CHANNELS) + ch * BLOCK_SIZE + block.thread_rank()] = C_add[ch];
 				}
 				++bbm;
 			}
@@ -449,17 +474,27 @@ renderCUDA(
 			float alpha = min(0.99f, decay * con_o.w * exp(power));
 			if(alpha < 1.0f / 255.0f)
 				continue;
-			float test_T = T * (1 - alpha);
-			if(test_T < 0.0001f) {
-				done = true;
-				continue;
+
+			if(collected_on_ray[j]) {
+				for(int ch = 0; ch < CHANNELS; ch++) {
+					float contrib = features[collected_id[j] * CHANNELS + ch] * alpha;
+					C[ch] += contrib;
+					C_add[ch] += contrib;
+				}
 			}
+			else if(collected_dist[j] < cull_distance) {
+				float test_T = T * (1 - alpha);
+				if(test_T < 0.0001f) {
+					done = true;
+					continue;
+				}
 
-			// Eq. (3) from 3D Gaussian splatting paper.
-			for(int ch = 0; ch < CHANNELS; ch++)
-				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
+				// Eq. (3) from 3D Gaussian splatting paper.
+				for(int ch = 0; ch < CHANNELS; ch++)
+					C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
 
-			T = test_T;
+				T = test_T;
+			}
 
 			// Keep track of last range entry to update this
 			// pixel.
@@ -471,8 +506,10 @@ renderCUDA(
 	// rendering data to the frame and auxiliary buffers.
 	if(inside) {
 		n_contrib[pix_id] = last_contributor;
-		for(int ch = 0; ch < CHANNELS; ch++)
+		for(int ch = 0; ch < CHANNELS; ch++) {
 			out_stft[ch * H * W + pix_id] = C[ch];
+			out_additive[ch * H * W + pix_id] = C_add[ch];
+		}
 	}
 
 	// max reduce the last contributor
@@ -490,20 +527,23 @@ void FORWARD::render(
 	const uint2* ranges,
 	const uint32_t* point_list,
 	const uint32_t* per_tile_bucket_offset, uint32_t* bucket_to_tile,
-	float* sampled_T, float* sampled_ar,
+	float* sampled_T, float* sampled_ar, float* sampled_additive,
 	int W, int H,
 	const float2* means2D,
 	const float* phasors,
 	const float4* conic_opacity,
+	const bool* on_ray,
 	uint32_t* n_contrib,
 	uint32_t* max_contrib,
 	float* out_stft,
-	float* distances) {
+	float* out_additive,
+	float* distances,
+	float cull_distance) {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
 		ranges,
 		point_list,
 		per_tile_bucket_offset, bucket_to_tile,
-		sampled_T, sampled_ar,
+		sampled_T, sampled_ar, sampled_additive,
 		W, H,
 		means2D,
 		phasors,
@@ -511,7 +551,10 @@ void FORWARD::render(
 		n_contrib,
 		max_contrib,
 		out_stft,
-		distances);
+		out_additive,
+		distances,
+		cull_distance,
+		on_ray);
 }
 
 template <int V, typename RotationModel>
@@ -531,12 +574,15 @@ void FORWARD::preprocess(
 	float* distances,
 	float* phasors,
 	float4* conic_opacity,
+	bool* on_ray,
 	const dim3 grid,
 	uint32_t* tiles_touched,
 	float antialiasing,
 	float speed,
 	float cull_distance,
-	float sh_clamping_threshold) {
+	float sh_clamping_threshold,
+	const glm::vec3* source_pos,
+	float ray_threshold) {
 	preprocessCUDA<NUM_CHANNELS, V, RotationModel> << <(P + 255) / 256, 256 >> > (
 		P, D, M, W, H,
 		micpos,
@@ -552,12 +598,15 @@ void FORWARD::preprocess(
 		distances,
 		phasors,
 		conic_opacity,
+		on_ray,
 		grid,
 		tiles_touched,
 		antialiasing,
 		speed,
 		cull_distance,
-		sh_clamping_threshold
+		sh_clamping_threshold,
+		source_pos,
+		ray_threshold
 		);
 }
 
@@ -578,12 +627,15 @@ template void FORWARD::preprocess<V, RotationModel>( \
 	float* distances, \
 	float* phasors, \
 	float4* conic_opacity, \
+	bool* on_ray, \
 	const dim3 grid, \
 	uint32_t* tiles_touched, \
 	float antialiasing, \
 	float speed, \
 	float cull_distance, \
-	float sh_clamping_threshold)
+	float sh_clamping_threshold, \
+	const glm::vec3* source_pos, \
+	float ray_threshold)
 
 INSTANTIATE(1, NoRotation);
 INSTANTIATE(2, DoubleQuaternion);

@@ -82,7 +82,8 @@ def training(config):
 
         # Compute first sample in testset
         gt_time, position_rx, position_tx = next(iter(test_loader))
-        pred_time = gaussians(position_rx.to(device))
+        pred_time = gaussians(
+            position_rx.to(device), position_tx=position_tx.to(device))
         loss_dict, gt_freq, pred_freq = criterion(
             pred_time, gt_time.to(device))
 
@@ -141,7 +142,8 @@ def training(config):
         gt_time, position_rx, position_tx = batch
 
         # Render
-        pred_time = gaussians(position_rx.to(device))
+        pred_time = gaussians(position_rx.to(
+            device), position_tx=position_tx.to(device))
 
         # Compute loss
         loss_dict, gt_freq, pred_freq = criterion(
@@ -190,7 +192,8 @@ def training(config):
                 for batch in test_loader:
                     gt_time, position_rx, position_tx = batch
 
-                    pred_time = gaussians(position_rx.to(device))
+                    pred_time = gaussians(position_rx.to(
+                        device), position_tx=position_tx.to(device))
 
                     metrics = metric_cal(gt_time.detach().cpu().numpy(),
                                          pred_time.detach().cpu().numpy(), config.audio.fs)
@@ -210,7 +213,8 @@ def training(config):
 
                 # Compute first sample in testset
                 gt_time, position_rx, position_tx = next(iter(test_loader))
-                pred_time = gaussians(position_rx.to(device))
+                pred_time = gaussians(position_rx.to(
+                    device), position_tx=position_tx.to(device))
                 loss_dict, gt_freq, pred_freq = criterion(
                     pred_time, gt_time.to(device))
 

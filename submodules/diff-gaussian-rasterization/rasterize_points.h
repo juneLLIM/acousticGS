@@ -15,7 +15,7 @@
 #include <tuple>
 #include <string>
 
-std::tuple<int, int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<int, int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizeGaussiansCUDA(
 	const torch::Tensor& micpos,
 	const torch::Tensor& means5D,
@@ -32,6 +32,8 @@ RasterizeGaussiansCUDA(
 	const float speed,
 	const float cull_distance,
 	const float sh_clamping_threshold,
+	const torch::Tensor& source_pos,
+	const float ray_threshold,
 	const bool debug);
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
@@ -48,6 +50,7 @@ RasterizeGaussiansBackwardCUDA(
 	const float scale_modifier,
 	const torch::Tensor& radii,
 	const torch::Tensor& dL_dout_stft,
+	const torch::Tensor& out_additive,
 	const torch::Tensor& geomBuffer,
 	const torch::Tensor& binningBuffer,
 	const torch::Tensor& imageBuffer,

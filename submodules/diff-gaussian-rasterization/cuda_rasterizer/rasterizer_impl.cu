@@ -214,6 +214,7 @@ CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& ch
 	obtain(chunk, geom.conic_opacity, P, 128);
 	obtain(chunk, geom.phasors, P * NUM_CHANNELS, 128);
 	obtain(chunk, geom.tiles_touched, P, 128);
+	obtain(chunk, geom.on_ray, P, 128);
 	cub::DeviceScan::InclusiveSum(nullptr, geom.scan_size, geom.tiles_touched, geom.tiles_touched, P);
 	obtain(chunk, geom.scanning_space, geom.scan_size, 128);
 	obtain(chunk, geom.point_offsets, P, 128);
@@ -244,6 +245,7 @@ CudaRasterizer::SampleState CudaRasterizer::SampleState::fromChunk(char*& chunk,
 	obtain(chunk, sample.bucket_to_tile, C * BLOCK_SIZE, 128);
 	obtain(chunk, sample.T, C * BLOCK_SIZE, 128);
 	obtain(chunk, sample.ar, NUM_CHANNELS * C * BLOCK_SIZE, 128);
+	obtain(chunk, sample.additive, NUM_CHANNELS * C * BLOCK_SIZE, 128);
 	return sample;
 }
 
@@ -296,11 +298,14 @@ std::tuple<int, int> CudaRasterizer::Rasterizer::forward(
 	const float scale_modifier,
 	int* radii,
 	float* out_stft,
+	float* out_additive,
 	float antialiasing,
 	int gaussian_version,
 	float speed,
 	float cull_distance,
 	float sh_clamping_threshold,
+	const float* source_pos,
+	const float ray_threshold,
 	bool debug) {
 
 	size_t chunk_size = required<GeometryState>(P);
@@ -336,12 +341,15 @@ std::tuple<int, int> CudaRasterizer::Rasterizer::forward(
 			geomState.distances, \
 			geomState.phasors, \
 			geomState.conic_opacity, \
+			geomState.on_ray, \
 			tile_grid, \
 			geomState.tiles_touched, \
 			antialiasing, \
 			speed, \
 			cull_distance, \
-			sh_clamping_threshold)), debug)
+			sh_clamping_threshold, \
+			(const glm::vec3*)source_pos, \
+			ray_threshold)), debug)
 
 	if(gaussian_version == 4) {
 		PREPROCESS(4, Bivector5D);
@@ -423,15 +431,18 @@ std::tuple<int, int> CudaRasterizer::Rasterizer::forward(
 		imgState.ranges,
 		binningState.point_list,
 		imgState.bucket_offsets, sampleState.bucket_to_tile,
-		sampleState.T, sampleState.ar,
+		sampleState.T, sampleState.ar, sampleState.additive,
 		W, H,
 		geomState.means2D,
 		feature_ptr,
 		geomState.conic_opacity,
+		geomState.on_ray,
 		imgState.n_contrib,
 		imgState.max_contrib,
 		out_stft,
-		geomState.distances), debug)
+		out_additive,
+		geomState.distances,
+		cull_distance), debug)
 
 		CHECK_CUDA(cudaMemcpy(imgState.pixel_phasors, out_stft, sizeof(float) * W * H * NUM_CHANNELS, cudaMemcpyDeviceToDevice), debug);
 	return std::make_tuple(num_rendered, bucket_sum);
@@ -454,6 +465,7 @@ void CudaRasterizer::Rasterizer::backward(
 	char* img_buffer,
 	char* sample_buffer,
 	const float* dL_dstft,
+	const float* out_additive,
 	float* dL_dmean2D,
 	float* dL_dconic,
 	float* dL_dopacity,
@@ -492,6 +504,7 @@ void CudaRasterizer::Rasterizer::backward(
 		imgState.bucket_offsets,
 		sampleState.bucket_to_tile,
 		sampleState.T,
+		sampleState.additive,
 		sampleState.ar,
 		geomState.means2D,
 		geomState.conic_opacity,
@@ -499,13 +512,16 @@ void CudaRasterizer::Rasterizer::backward(
 		geomState.distances,
 		imgState.n_contrib,
 		imgState.max_contrib,
+		out_additive,
 		imgState.pixel_phasors,
 		dL_dstft,
 		(float2*)dL_dmean2D,
 		(float4*)dL_dconic,
 		dL_dopacity,
 		dL_dphasor,
-		dL_ddistance), debug)
+		dL_ddistance,
+		geomState.on_ray,
+		cull_distance), debug)
 
 
 #define PREPROCESS(V, RotationModel) \
@@ -529,6 +545,7 @@ void CudaRasterizer::Rasterizer::backward(
 		dL_dsh, \
 		dL_dscale, \
 		dL_drot, \
+		geomState.on_ray, \
 		antialiasing, \
 		speed, \
 		cull_distance, \

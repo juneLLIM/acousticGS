@@ -40,12 +40,15 @@ namespace FORWARD
 		float* distances,
 		float* phasors,
 		float4* conic_opacity,
+		bool* on_ray,
 		const dim3 grid,
 		uint32_t* tiles_touched,
 		float antialiasing,
 		float speed,
 		float cull_distance,
-		float sh_clamping_threshold);
+		float sh_clamping_threshold,
+		const glm::vec3* source_pos,
+		float ray_threshold);
 
 	// Main rasterization method.
 	void render(
@@ -53,15 +56,18 @@ namespace FORWARD
 		const uint2* ranges,
 		const uint32_t* point_list,
 		const uint32_t* per_tile_bucket_offset, uint32_t* bucket_to_tile,
-		float* sampled_T, float* sampled_ar,
+		float* sampled_T, float* sampled_ar, float* sampled_additive,
 		int W, int H,
 		const float2* means2D,
 		const float* phasors,
 		const float4* conic_opacity,
+		const bool* on_ray,
 		uint32_t* n_contrib,
 		uint32_t* max_contrib,
 		float* out_stft,
-		float* distances);
+		float* out_additive,
+		float* distances,
+		float cull_distance);
 }
 
 

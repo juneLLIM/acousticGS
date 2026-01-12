@@ -49,7 +49,7 @@ std::function<float* (size_t N)> resizeFloatFunctional(torch::Tensor& t) {
 	return lambda;
 }
 
-std::tuple<int, int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<int, int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizeGaussiansCUDA(
 	const torch::Tensor& micpos,
 	const torch::Tensor& means5D,
@@ -66,6 +66,8 @@ RasterizeGaussiansCUDA(
 	const float speed,
 	const float cull_distance,
 	const float sh_clamping_threshold,
+	const torch::Tensor& source_pos,
+	const float ray_threshold,
 	const bool debug) {
 	if(means5D.ndimension() != 2 || means5D.size(1) != 5) {
 		AT_ERROR("means5D must have dimensions (num_points, 5)");
@@ -80,6 +82,7 @@ RasterizeGaussiansCUDA(
 	auto complex_opts = means5D.options().dtype(torch::kComplexFloat);
 
 	torch::Tensor out_stft = torch::full({W, H}, 0.0, complex_opts);
+	torch::Tensor out_additive = torch::full({W, H}, 0.0, complex_opts);
 	torch::Tensor radii = torch::full({P}, 0, means5D.options().dtype(torch::kInt32));
 
 	torch::Device device(torch::kCUDA);
@@ -116,17 +119,20 @@ RasterizeGaussiansCUDA(
 			scale_modifier,
 			radii.contiguous().data_ptr<int>(),
 			reinterpret_cast<float*>(out_stft.contiguous().data_ptr<c10::complex<float>>()),
+			reinterpret_cast<float*>(out_additive.contiguous().data_ptr<c10::complex<float>>()),
 			antialiasing,
 			gaussian_version,
 			speed,
 			cull_distance,
 			sh_clamping_threshold,
+			source_pos.contiguous().data_ptr<float>(),
+			ray_threshold,
 			debug);
 
 		rendered = std::get<0>(tup);
 		num_buckets = std::get<1>(tup);
 	}
-	return std::make_tuple(rendered, num_buckets, out_stft, radii, geomBuffer, binningBuffer, imgBuffer, sampleBuffer);
+	return std::make_tuple(rendered, num_buckets, out_stft, out_additive, radii, geomBuffer, binningBuffer, imgBuffer, sampleBuffer);
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
@@ -143,6 +149,7 @@ RasterizeGaussiansBackwardCUDA(
 	const float scale_modifier,
 	const torch::Tensor& radii,
 	const torch::Tensor& dL_dout_stft,
+	const torch::Tensor& out_additive,
 	const torch::Tensor& geomBuffer,
 	const torch::Tensor& binningBuffer,
 	const torch::Tensor& imageBuffer,
@@ -192,6 +199,7 @@ RasterizeGaussiansBackwardCUDA(
 			reinterpret_cast<char*>(imageBuffer.contiguous().data_ptr()),
 			reinterpret_cast<char*>(sampleBuffer.contiguous().data_ptr()),
 			reinterpret_cast<float*>(dL_dout_stft.contiguous().data_ptr<c10::complex<float>>()),
+			reinterpret_cast<float*>(out_additive.contiguous().data_ptr<c10::complex<float>>()),
 			dL_dmeans2D.contiguous().data_ptr<float>(),
 			dL_dconic.contiguous().data_ptr<float>(),
 			dL_dopacity.contiguous().data_ptr<float>(),

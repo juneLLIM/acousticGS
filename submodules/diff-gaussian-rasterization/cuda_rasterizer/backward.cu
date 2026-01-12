@@ -158,7 +158,8 @@ __device__ void project_and_conic(
 	float* dL_dmeans,
 	float* dL_dscales,
 	float* dL_drotations,
-	float* dL_dopacity
+	float* dL_dopacity,
+	const bool* on_ray
 ) {
 
 	// =========================================================
@@ -178,7 +179,8 @@ __device__ void project_and_conic(
 	const float dist_sq = dx * dx + dy * dy + dz * dz;
 
 	// Distance culling
-	if(dist_sq < 1e-12f || dist_sq > cull_distance * cull_distance) return;
+	bool on_ray_val = on_ray[idx];
+	if(!on_ray_val && (dist_sq < 1e-12f || dist_sq > cull_distance * cull_distance)) return;
 
 	// Jacobian computation
 	const float inv_speed = 1.0f / speed;
@@ -485,6 +487,7 @@ __global__ void preprocessCUDA(
 	float* dL_dopacity,
 	const float* dL_dconic,
 	const float* dL_ddistance,
+	const bool* on_ray,
 	float antialiasing,
 	float speed,
 	float cull_distance) {
@@ -501,7 +504,8 @@ __global__ void preprocessCUDA(
 		project_and_conic<V, RotationModel>(
 			idx, W, H, *micpos, means5D, opacities, scales, rotations, scale_modifier, speed, cull_distance, antialiasing,
 			dL_dmean2D, dL_dconic, dL_ddistance, // Inputs
-			dL_dmean5D, dL_dscale, dL_drot, dL_dopacity // Outputs
+			dL_dmean5D, dL_dscale, dL_drot, dL_dopacity, // Outputs
+			on_ray
 		);
 	}
 }
@@ -515,7 +519,7 @@ PerGaussianRenderCUDA(
 	int W, int H, int B,
 	const uint32_t* __restrict__ per_tile_bucket_offset,
 	const uint32_t* __restrict__ bucket_to_tile,
-	const float* __restrict__ sampled_T, const float* __restrict__ sampled_ar,
+	const float* __restrict__ sampled_T, const float* __restrict__ sampled_ar, const float* __restrict__ sampled_additive,
 	const float2* __restrict__ means2D,
 	const float4* __restrict__ conic_opacity,
 	const float* __restrict__ phasors,
@@ -523,12 +527,15 @@ PerGaussianRenderCUDA(
 	const uint32_t* __restrict__ n_contrib,
 	const uint32_t* __restrict__ max_contrib,
 	const float* __restrict__ pixel_phasors,
+	const float* __restrict__ pixel_additive,
 	const float* __restrict__ dL_dstft,
 	float2* __restrict__ dL_dmean2D,
 	float4* __restrict__ dL_dconic2D,
 	float* __restrict__ dL_dopacity,
 	float* __restrict__ dL_dphasor,
-	float* __restrict__ dL_ddistance
+	float* __restrict__ dL_ddistance,
+	const bool* __restrict__ on_ray,
+	float cull_distance
 ) {
 	// global_bucket_idx = warp_idx
 	auto block = cg::this_thread_block();
@@ -565,11 +572,15 @@ PerGaussianRenderCUDA(
 	float4 con_o = {0.0f, 0.0f, 0.0f, 0.0f};
 	float c[C] = {0.0f};
 	float decay = 0.0f;
+	bool additive_only = false;
 	if(valid_splat) {
 		gaussian_idx = point_list[splat_idx_global];
 		xy = means2D[gaussian_idx];
 		con_o = conic_opacity[gaussian_idx];
 		decay = 1.0f / distances[gaussian_idx];
+		bool on_ray_val = on_ray[gaussian_idx];
+		if(!on_ray_val && distances[gaussian_idx] >= cull_distance) valid_splat = false;
+		additive_only = on_ray_val;
 		for(int ch = 0; ch < C; ++ch)
 			c[ch] = phasors[gaussian_idx * C + ch];
 	}
@@ -593,12 +604,24 @@ PerGaussianRenderCUDA(
 	float T;
 	float last_contributor;
 	float ar[C];
+	float additive_chk[C];
 	float dL_dpixel[C];
 	const float ddelx_dx = 0.5 * W;
 	const float ddely_dy = 0.5 * H;
 
 	// iterate over all pixels in the tile
 	for(int i = 0; i < BLOCK_SIZE + 31; ++i) {
+		if(false) {
+			int idx = i - my_warp.thread_rank();
+			const uint2 pix = {pix_min.x + idx % BLOCK_X, pix_min.y + idx / BLOCK_X};
+			bool valid_pixel = pix.x < W && pix.y < H;
+			const float2 pixf = {(float)pix.x, (float)pix.y};
+
+			if(valid_splat && valid_pixel && 0 <= idx && idx < BLOCK_SIZE) {
+				if(W <= pix.x || H <= pix.y) continue;
+				if(splat_idx_in_tile >= max_contrib[tile_id]) continue;
+			}
+		}
 		// SHUFFLING
 
 		// At this point, T already has my (1 - alpha) multiplied.
@@ -607,6 +630,7 @@ PerGaussianRenderCUDA(
 		last_contributor = my_warp.shfl_up(last_contributor, 1);
 		for(int ch = 0; ch < C; ++ch) {
 			ar[ch] = my_warp.shfl_up(ar[ch], 1);
+			additive_chk[ch] = my_warp.shfl_up(additive_chk[ch], 1);
 			dL_dpixel[ch] = my_warp.shfl_up(dL_dpixel[ch], 1);
 		}
 
@@ -623,7 +647,8 @@ PerGaussianRenderCUDA(
 			T = sampled_T[global_bucket_idx * BLOCK_SIZE + idx];
 			last_contributor = n_contrib[pix_id];
 			for(int ch = 0; ch < C; ++ch) {
-				ar[ch] = -pixel_phasors[ch * H * W + pix_id] + sampled_ar[global_bucket_idx * BLOCK_SIZE * C + ch * BLOCK_SIZE + idx];
+				additive_chk[ch] = sampled_additive[global_bucket_idx * BLOCK_SIZE * C + ch * BLOCK_SIZE + idx];
+				dL_dpixel[ch] = dL_dstft[ch * H * W + pix_id];
 				dL_dpixel[ch] = dL_dstft[ch * H * W + pix_id];
 			}
 		}
@@ -641,15 +666,39 @@ PerGaussianRenderCUDA(
 			const float G = exp(power);
 			const float alpha = min(0.99f, decay * con_o.w * G);
 			if(alpha < 1.0f / 255.0f) continue;
-			const float weight = alpha * T;
+
+			float weight;
+			if(additive_only) {
+				weight = alpha;
+			}
+			else {
+				weight = alpha * T;
+			}
 
 			// add the gradient contribution of this pixel's phasor to the gaussian
 			float dL_dalpha = 0.0f;
 			for(int ch = 0; ch < C; ++ch) {
 				ar[ch] += weight * c[ch]; // TODO: check
+				if(additive_only) {
+					additive_chk[ch] += weight * c[ch];
+				}
+
 				const float& dL_dchannel = dL_dpixel[ch];
 				Register_dL_dphasor[ch] += weight * dL_dchannel;
-				dL_dalpha += ((c[ch] * T) - (1.0f / (1.0f - alpha)) * (-ar[ch])) * dL_dchannel;
+				if(additive_only) {
+					dL_dalpha += c[ch] * dL_dchannel;
+				}
+				else {
+					float pixel_final_additive = pixel_additive[ch * H * W + pix_id];
+					float background_additive = pixel_final_additive - additive_chk[ch];
+					float background_total = -ar[ch];
+					float background_transmittance = background_total - background_additive;
+					dL_dalpha += ((c[ch] * T) - (1.0f / (1.0f - alpha)) * (background_transmittance)) * dL_dchannel;
+				}
+			}
+
+			if(!additive_only) {
+				T = T * (1.0f - alpha);
 			}
 
 			// Helpful reusable temporary variables
@@ -701,14 +750,15 @@ void BACKWARD::preprocess(
 	const float* clamped,
 	const int* radii,
 	const float2* dL_dmean2D,
-	const float* dL_dconic,
+	const float* dL_dconics,
 	const float* dL_ddistance,
 	float* dL_dopacity,
-	float* dL_dmean5D,
+	float* dL_dmeans5D,
 	float* dL_dphasor,
 	float* dL_dsh,
 	float* dL_dscale,
 	float* dL_drot,
+	const bool* on_ray,
 	float antialiasing,
 	float speed,
 	float cull_distance,
@@ -726,14 +776,15 @@ void BACKWARD::preprocess(
 		clamped,
 		radii,
 		dL_dmean2D,
-		dL_dmean5D,
+		dL_dmeans5D,
 		dL_dphasor,
 		dL_dsh,
 		dL_dscale,
 		dL_drot,
 		dL_dopacity,
-		dL_dconic,
+		dL_dconics,
 		dL_ddistance,
+		on_ray,
 		antialiasing,
 		speed,
 		cull_distance);
@@ -752,14 +803,15 @@ template void BACKWARD::preprocess<V, RotationModel>( \
 	const float* clamped, \
 	const int* radii, \
 	const float2* dL_dmean2D, \
-	const float* dL_dconic, \
+	const float* dL_dconics, \
 	const float* dL_ddistance, \
 	float* dL_dopacity, \
-	float* dL_dmean5D, \
+	float* dL_dmeans5D, \
 	float* dL_dphasor, \
 	float* dL_dsh, \
 	float* dL_dscale, \
 	float* dL_drot, \
+	const bool* on_ray, \
 	float antialiasing, \
 	float speed, \
 	float cull_distance, \
@@ -781,6 +833,7 @@ void BACKWARD::render(
 	const uint32_t* bucket_to_tile,
 	const float* sampled_T,
 	const float* sampled_ar,
+	const float* sampled_additive,
 	const float2* means2D,
 	const float4* conic_opacity,
 	const float* phasors,
@@ -788,12 +841,15 @@ void BACKWARD::render(
 	const uint32_t* n_contrib,
 	const uint32_t* max_contrib,
 	const float* pixel_phasors,
+	const float* pixel_additive,
 	const float* dL_dstft,
 	float2* dL_dmean2D,
 	float4* dL_dconic2D,
 	float* dL_dopacity,
 	float* dL_dphasor,
-	float* dL_ddistance) {
+	float* dL_ddistance,
+	const bool* on_ray,
+	float cull_distance) {
 	const int THREADS = 32;
 	PerGaussianRenderCUDA<NUM_CHANNELS> << <((B * 32) + THREADS - 1) / THREADS, THREADS >> > (
 		ranges,
@@ -801,7 +857,7 @@ void BACKWARD::render(
 		W, H, B,
 		per_bucket_tile_offset,
 		bucket_to_tile,
-		sampled_T, sampled_ar,
+		sampled_T, sampled_ar, sampled_additive,
 		means2D,
 		conic_opacity,
 		phasors,
@@ -809,11 +865,14 @@ void BACKWARD::render(
 		n_contrib,
 		max_contrib,
 		pixel_phasors,
+		pixel_additive,
 		dL_dstft,
 		dL_dmean2D,
 		dL_dconic2D,
 		dL_dopacity,
 		dL_dphasor,
-		dL_ddistance
+		dL_ddistance,
+		on_ray,
+		cull_distance
 		);
 }

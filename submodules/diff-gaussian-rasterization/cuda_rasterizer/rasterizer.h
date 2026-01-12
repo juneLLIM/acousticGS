@@ -36,11 +36,14 @@ namespace CudaRasterizer
 			const float scale_modifier,
 			int* radii,
 			float* out_stft,
+			float* out_additive,
 			float antialiasing,
 			int gaussian_version,
 			float speed,
 			float cull_distance,
 			float sh_clamping_threshold,
+			const float* source_pos,
+			const float ray_threshold,
 			bool debug = false);
 
 		static void backward(
@@ -58,6 +61,7 @@ namespace CudaRasterizer
 			char* img_buffer,
 			char* sample_buffer,
 			const float* dL_dstft,
+			const float* out_additive,
 			float* dL_dmean2D,
 			float* dL_dconic,
 			float* dL_dopacity,

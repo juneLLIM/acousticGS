@@ -99,7 +99,8 @@ class GaussianModel(nn.Module):
             self.get_opacity,
             self.get_scaling,
             self._rotation,
-            self.active_sh_degree
+            self.active_sh_degree,
+            position_tx
         )
 
         self.visibility = (radii > 0).any(dim=0)

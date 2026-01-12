@@ -27,11 +27,12 @@ class _RasterizeGaussians(torch.autograd.Function):
         T, M,
         sh_degree,
         speed,
+        source_pos,
         config
     ):
 
         # Invoke C++/CUDA rasterizer
-        num_rendered, num_buckets, phasor, radii, geomBuffer, binningBuffer, imgBuffer, sampleBuffer = _C.rasterize_gaussians(
+        num_rendered, num_buckets, phasor, out_additive, radii, geomBuffer, binningBuffer, imgBuffer, sampleBuffer = _C.rasterize_gaussians(
             query_points,
             means5D,
             shs,
@@ -46,6 +47,8 @@ class _RasterizeGaussians(torch.autograd.Function):
             speed,
             config.rendering.cull_distance,
             config.rendering.sh_clamping_threshold,
+            source_pos,
+            config.rendering.ray_threshold,
             config.logging.cuda)
 
         # Keep relevant tensors for backward
@@ -54,8 +57,9 @@ class _RasterizeGaussians(torch.autograd.Function):
         ctx.sh_degree = sh_degree
         ctx.num_rendered = num_rendered
         ctx.num_buckets = num_buckets
+        ctx.source_pos = source_pos
         ctx.save_for_backward(query_points, means5D, shs, opacities, scales, rotations,
-                              radii, geomBuffer, binningBuffer, imgBuffer, sampleBuffer)
+                              out_additive, radii, geomBuffer, binningBuffer, imgBuffer, sampleBuffer)
         return phasor, radii
 
     @staticmethod
@@ -67,7 +71,7 @@ class _RasterizeGaussians(torch.autograd.Function):
         sh_degree = ctx.sh_degree
         num_rendered = ctx.num_rendered
         num_buckets = ctx.num_buckets
-        query_points, means5D, shs, opacities, scales, rotations, radii, geomBuffer, binningBuffer, imgBuffer, sampleBuffer = ctx.saved_tensors
+        query_points, means5D, shs, opacities, scales, rotations, out_additive, radii, geomBuffer, binningBuffer, imgBuffer, sampleBuffer = ctx.saved_tensors
 
         # Compute gradients for relevant tensors by invoking backward method
         grad_means5D, grad_shs, grad_opacities, grad_scales, grad_rotations = _C.rasterize_gaussians_backward(
@@ -83,6 +87,7 @@ class _RasterizeGaussians(torch.autograd.Function):
             config.rendering.scale_modifier,
             radii,
             grad_out_phasor,
+            out_additive,
             geomBuffer,
             binningBuffer,
             imgBuffer,
@@ -104,6 +109,7 @@ class _RasterizeGaussians(torch.autograd.Function):
             None, None,
             None,
             None,
+            None,
             None
         )
 
@@ -118,9 +124,10 @@ class GaussianRasterizer(nn.Module):
         self.M = M
         self.speed = speed
 
-    def forward(self, query_points, means5D, shs, opacities, scales, rotations, sh_degree):
+    def forward(self, query_points, means5D, shs, opacities, scales, rotations, sh_degree, source_pos):
 
         # Invoke C++/CUDA rasterizing routine
+
         if query_points.dim() == 2:
             stfts = []
             radiis = []
@@ -135,6 +142,7 @@ class GaussianRasterizer(nn.Module):
                     self.T, self.M,
                     sh_degree,
                     self.speed,
+                    source_pos,
                     self.config
                 )
                 stfts.append(stft)
@@ -151,6 +159,7 @@ class GaussianRasterizer(nn.Module):
             self.T, self.M,
             sh_degree,
             self.speed,
+            source_pos,
             self.config
         )
 

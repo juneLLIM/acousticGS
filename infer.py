@@ -56,7 +56,8 @@ def inference(config):
             gt_time, position_rx, position_tx = batch
 
             start_time = time.time()
-            pred_time = gaussians(position_rx.to(device))
+            pred_time = gaussians(
+                position_rx.to(device), position_tx=position_tx.to(device))
             batch_time = time.time() - start_time
 
             total_time += batch_time

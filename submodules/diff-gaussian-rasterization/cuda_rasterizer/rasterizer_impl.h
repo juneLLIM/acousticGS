@@ -37,6 +37,7 @@ namespace CudaRasterizer
 		float* phasors;
 		uint32_t* point_offsets;
 		uint32_t* tiles_touched;
+		bool* on_ray;
 
 		static GeometryState fromChunk(char*& chunk, size_t P);
 	};
@@ -79,6 +80,7 @@ namespace CudaRasterizer
 		uint32_t* bucket_to_tile;
 		float* T;
 		float* ar;
+		float* additive;
 		static SampleState fromChunk(char*& chunk, size_t C);
 	};
 

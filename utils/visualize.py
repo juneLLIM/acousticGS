@@ -219,7 +219,8 @@ def visualize_sound_field_video(gaussians, position_rx, position_tx, coord_min, 
 
     with torch.no_grad():
         for i in range(0, grid_points.shape[0]):
-            pred_ir = gaussians(grid_points[None, i, :].to(device))
+            pred_ir = gaussians(
+                grid_points[None, i, :].to(device), position_tx=position_tx.to(device))
 
             # Keep only target time indices
             pred_ir = pred_ir[:, seq_idxs]
