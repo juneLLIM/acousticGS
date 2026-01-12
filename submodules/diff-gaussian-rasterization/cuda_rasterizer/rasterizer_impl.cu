@@ -145,8 +145,6 @@ __global__ void duplicateWithKeys(
 				max_opac_factor = max_contrib_power_rect_gaussian_float<BLOCK_X - 1, BLOCK_Y - 1>(co, xy, tile_min, tile_max, max_pos);
 
 				uint64_t key = y * grid.x + x;
-				key <<= 32;
-				key |= *((uint32_t*)&distances[idx]);
 				if(max_opac_factor <= opacity_factor_threshold) {
 					gaussian_keys_unsorted[off] = key;
 					gaussian_values_unsorted[off] = idx;
@@ -157,9 +155,7 @@ __global__ void duplicateWithKeys(
 
 		for(; off < offset_to; ++off) {
 			uint64_t key = (uint32_t)-1;
-			key <<= 32;
 			const float distance = FLT_MAX;
-			key |= *((uint32_t*)&distance);
 			gaussian_values_unsorted[off] = static_cast<uint32_t>(-1);
 			gaussian_keys_unsorted[off] = key;
 		}
@@ -176,13 +172,13 @@ __global__ void identifyTileRanges(int L, uint64_t* point_list_keys, uint2* rang
 
 	// Read tile ID from key. Update start/end of tile range if at limit.
 	uint64_t key = point_list_keys[idx];
-	uint32_t currtile = key >> 32;
+	uint32_t currtile = (uint32_t)key; // TileID is now in the lower bits
 	bool valid_tile = currtile != (uint32_t)-1;
 
 	if(idx == 0)
 		ranges[currtile].x = 0;
 	else {
-		uint32_t prevtile = point_list_keys[idx - 1] >> 32;
+		uint32_t prevtile = (uint32_t)point_list_keys[idx - 1];
 		if(currtile != prevtile) {
 			ranges[prevtile].y = idx;
 			if(valid_tile)
@@ -393,7 +389,7 @@ std::tuple<int, int> CudaRasterizer::Rasterizer::forward(
 		binningState.sorting_size,
 		binningState.point_list_keys_unsorted, binningState.point_list_keys,
 		binningState.point_list_unsorted, binningState.point_list,
-		num_rendered, 0, 32 + bit), debug)
+		num_rendered, 0, bit), debug)
 
 		CHECK_CUDA(cudaMemset(imgState.ranges, 0, tile_grid.x * tile_grid.y * sizeof(uint2)), debug);
 

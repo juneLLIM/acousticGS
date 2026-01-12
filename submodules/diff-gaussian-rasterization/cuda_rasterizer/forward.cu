@@ -422,10 +422,6 @@ renderCUDA(
 		for(int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++) {
 			// add incoming T value for every 32nd gaussian
 			if(j % 32 == 0) {
-				sampled_T[(bbm * BLOCK_SIZE) + block.thread_rank()] = T;
-				for(int ch = 0; ch < CHANNELS; ++ch) {
-					sampled_ar[(bbm * BLOCK_SIZE * CHANNELS) + ch * BLOCK_SIZE + block.thread_rank()] = C[ch];
-				}
 				++bbm;
 			}
 
@@ -437,7 +433,7 @@ renderCUDA(
 			float2 tf = collected_tf[j];
 			float2 d = {tf.x - pixf.x, tf.y - pixf.y};
 			float4 con_o = collected_conic_opacity[j];
-			float decay = 1 / collected_dist[j];
+			float decay = 1 / (collected_dist[j] + 1e-6f); // decay term added
 			float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
 			if(power > 0.0f)
 				continue;
@@ -446,20 +442,12 @@ renderCUDA(
 			// Obtain alpha by multiplying with Gaussian opacity
 			// and its exponential falloff from mean.
 			// Avoid numerical instabilities (see paper appendix). 
-			float alpha = min(0.99f, decay * con_o.w * exp(power));
-			if(alpha < 1.0f / 255.0f)
-				continue;
-			float test_T = T * (1 - alpha);
-			if(test_T < 0.0001f) {
-				done = true;
-				continue;
-			}
+			float alpha = decay * con_o.w * exp(power); // decay term added
 
 			// Eq. (3) from 3D Gaussian splatting paper.
 			for(int ch = 0; ch < CHANNELS; ch++)
 				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
 
-			T = test_T;
 
 			// Keep track of last range entry to update this
 			// pixel.

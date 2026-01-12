@@ -565,11 +565,12 @@ PerGaussianRenderCUDA(
 	float4 con_o = {0.0f, 0.0f, 0.0f, 0.0f};
 	float c[C] = {0.0f};
 	float decay = 0.0f;
+
 	if(valid_splat) {
 		gaussian_idx = point_list[splat_idx_global];
 		xy = means2D[gaussian_idx];
 		con_o = conic_opacity[gaussian_idx];
-		decay = 1.0f / distances[gaussian_idx];
+		decay = 1.0f / (distances[gaussian_idx] + 1e-6f);
 		for(int ch = 0; ch < C; ++ch)
 			c[ch] = phasors[gaussian_idx * C + ch];
 	}
@@ -590,9 +591,7 @@ PerGaussianRenderCUDA(
 	const uint2 pix_min = {tile.x * BLOCK_X, tile.y * BLOCK_Y};
 
 	// values useful for gradient calculation
-	float T;
 	float last_contributor;
-	float ar[C];
 	float dL_dpixel[C];
 	const float ddelx_dx = 0.5 * W;
 	const float ddely_dy = 0.5 * H;
@@ -603,10 +602,8 @@ PerGaussianRenderCUDA(
 
 		// At this point, T already has my (1 - alpha) multiplied.
 		// So pass this ready-made T value to next thread.
-		T = my_warp.shfl_up(T, 1);
 		last_contributor = my_warp.shfl_up(last_contributor, 1);
 		for(int ch = 0; ch < C; ++ch) {
-			ar[ch] = my_warp.shfl_up(ar[ch], 1);
 			dL_dpixel[ch] = my_warp.shfl_up(dL_dpixel[ch], 1);
 		}
 
@@ -620,10 +617,8 @@ PerGaussianRenderCUDA(
 		// every 32nd thread should read the stored state from memory
 		// TODO: perhaps store these things in shared memory?
 		if(valid_splat && valid_pixel && my_warp.thread_rank() == 0 && idx < BLOCK_SIZE) {
-			T = sampled_T[global_bucket_idx * BLOCK_SIZE + idx];
 			last_contributor = n_contrib[pix_id];
 			for(int ch = 0; ch < C; ++ch) {
-				ar[ch] = -pixel_phasors[ch * H * W + pix_id] + sampled_ar[global_bucket_idx * BLOCK_SIZE * C + ch * BLOCK_SIZE + idx];
 				dL_dpixel[ch] = dL_dstft[ch * H * W + pix_id];
 			}
 		}
@@ -639,17 +634,15 @@ PerGaussianRenderCUDA(
 			const float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
 			if(power > 0.0f) continue;
 			const float G = exp(power);
-			const float alpha = min(0.99f, decay * con_o.w * G);
+			const float alpha = decay * con_o.w * G;
 			if(alpha < 1.0f / 255.0f) continue;
-			const float weight = alpha * T;
 
 			// add the gradient contribution of this pixel's phasor to the gaussian
 			float dL_dalpha = 0.0f;
 			for(int ch = 0; ch < C; ++ch) {
-				ar[ch] += weight * c[ch]; // TODO: check
 				const float& dL_dchannel = dL_dpixel[ch];
-				Register_dL_dphasor[ch] += weight * dL_dchannel;
-				dL_dalpha += ((c[ch] * T) - (1.0f / (1.0f - alpha)) * (-ar[ch])) * dL_dchannel;
+				Register_dL_dphasor[ch] += alpha * dL_dchannel;
+				dL_dalpha += c[ch] * dL_dchannel;
 			}
 
 			// Helpful reusable temporary variables
