@@ -196,7 +196,7 @@ def training(config):
                                          pred_time.detach().cpu().numpy(), config.audio.fs)
 
                     final_metric = {
-                        k: final_metric.get(k, 0) + v * len(batch) for k, v in metrics.items()}
+                        k: final_metric.get(k, 0) + v * len(position_rx) for k, v in metrics.items()}
 
                 final_metric = {
                     k: v / len(test_dataset) for k, v in final_metric.items()}

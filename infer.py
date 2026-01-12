@@ -66,7 +66,7 @@ def inference(config):
                                  pred_time.detach().cpu().numpy(), config.audio.fs)
 
             final_metric = {
-                k: final_metric.get(k, 0) + v * len(batch) for k, v in metrics.items()}
+                k: final_metric.get(k, 0) + v * len(position_rx) for k, v in metrics.items()}
 
             # Visualizations
             if config.logging.viz:
