@@ -569,7 +569,7 @@ PerGaussianRenderCUDA(
 		gaussian_idx = point_list[splat_idx_global];
 		xy = means2D[gaussian_idx];
 		con_o = conic_opacity[gaussian_idx];
-		decay = 1.0f / distances[gaussian_idx];
+		decay = 1.0f / (distances[gaussian_idx] + 1e-6f);
 		for(int ch = 0; ch < C; ++ch)
 			c[ch] = phasors[gaussian_idx * C + ch];
 	}
@@ -639,21 +639,23 @@ PerGaussianRenderCUDA(
 			const float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
 			if(power > 0.0f) continue;
 			const float G = exp(power);
-			const float alpha = min(0.99f, decay * con_o.w * G);
+			const float alpha = min(0.99f, con_o.w * G);
 			if(alpha < 1.0f / 255.0f) continue;
-			const float weight = alpha * T;
+			const float weight = alpha * T * decay;
 
 			// add the gradient contribution of this pixel's phasor to the gaussian
 			float dL_dalpha = 0.0f;
+			float dL_ddecay = 0.0f;
 			for(int ch = 0; ch < C; ++ch) {
 				ar[ch] += weight * c[ch]; // TODO: check
 				const float& dL_dchannel = dL_dpixel[ch];
 				Register_dL_dphasor[ch] += weight * dL_dchannel;
-				dL_dalpha += ((c[ch] * T) - (1.0f / (1.0f - alpha)) * (-ar[ch])) * dL_dchannel;
+				dL_dalpha += ((c[ch] * T * decay) - (1.0f / (1.0f - alpha)) * (-ar[ch])) * dL_dchannel;
+				dL_ddecay += dL_dpixel[ch] * (c[ch] * alpha * T);
 			}
 
 			// Helpful reusable temporary variables
-			const float dL_dG = decay * con_o.w * dL_dalpha;
+			const float dL_dG = con_o.w * dL_dalpha;
 			const float gdx = G * d.x;
 			const float gdy = G * d.y;
 			const float dG_ddelx = -gdx * con_o.x - gdy * con_o.y;
@@ -668,8 +670,8 @@ PerGaussianRenderCUDA(
 			Register_dL_dconic2D_x += -0.5f * gdx * d.x * dL_dG;
 			Register_dL_dconic2D_y += -0.5f * gdx * d.y * dL_dG;
 			Register_dL_dconic2D_z += -0.5f * gdy * d.y * dL_dG;
-			Register_dL_dopacity += decay * G * dL_dalpha;
-			Register_dL_ddistance += (con_o.w * G * dL_dalpha) * -(decay * decay);
+			Register_dL_dopacity += G * dL_dalpha;
+			Register_dL_ddistance += dL_ddecay * -(decay * decay);
 		}
 	}
 
