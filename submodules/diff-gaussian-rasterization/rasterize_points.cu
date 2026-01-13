@@ -152,6 +152,7 @@ RasterizeGaussiansBackwardCUDA(
 	const float speed,
 	const float cull_distance,
 	const float sh_clamping_threshold,
+	const float phase_grad_scale,
 	const bool debug) {
 
 	const int P = means5D.size(0);
@@ -206,6 +207,7 @@ RasterizeGaussiansBackwardCUDA(
 			speed,
 			cull_distance,
 			sh_clamping_threshold,
+			phase_grad_scale,
 			debug);
 	}
 

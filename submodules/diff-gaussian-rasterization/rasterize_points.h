@@ -57,6 +57,7 @@ RasterizeGaussiansBackwardCUDA(
 	const float speed,
 	const float cull_distance,
 	const float sh_clamping_threshold,
+	const float phase_grad_scale,
 	const bool debug);
 
 void adamUpdate(

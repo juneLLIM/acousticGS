@@ -140,8 +140,14 @@ def training(config):
         # Prepare data
         gt_time, position_rx, position_tx = batch
 
+        # Calculate phase gradient scale
+        phase_grad_scale = 0.0
+        if iteration >= 10000:
+            phase_grad_scale = min(1.0, (iteration - 10000) / 5000.0)
+
         # Render
-        pred_time = gaussians(position_rx.to(device))
+        pred_time = gaussians(position_rx.to(
+            device), phase_grad_scale=phase_grad_scale)
 
         # Compute loss
         loss_dict, gt_freq, pred_freq = criterion(

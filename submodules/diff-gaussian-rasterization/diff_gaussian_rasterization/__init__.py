@@ -27,7 +27,8 @@ class _RasterizeGaussians(torch.autograd.Function):
         T, M,
         sh_degree,
         speed,
-        config
+        config,
+        phase_grad_scale=1.0
     ):
 
         # Invoke C++/CUDA rasterizer
@@ -50,6 +51,7 @@ class _RasterizeGaussians(torch.autograd.Function):
 
         # Keep relevant tensors for backward
         ctx.config = config
+        ctx.phase_grad_scale = phase_grad_scale
         ctx.speed = speed
         ctx.sh_degree = sh_degree
         ctx.num_rendered = num_rendered
@@ -63,6 +65,7 @@ class _RasterizeGaussians(torch.autograd.Function):
 
         # Restore necessary values from context
         config = ctx.config
+        phase_grad_scale = ctx.phase_grad_scale
         speed = ctx.speed
         sh_degree = ctx.sh_degree
         num_rendered = ctx.num_rendered
@@ -92,6 +95,7 @@ class _RasterizeGaussians(torch.autograd.Function):
             speed,
             config.rendering.cull_distance,
             config.rendering.sh_clamping_threshold,
+            phase_grad_scale,
             config.logging.cuda)
 
         grads = (
@@ -102,6 +106,7 @@ class _RasterizeGaussians(torch.autograd.Function):
             grad_scales,
             grad_rotations,
             None, None,
+            None,
             None,
             None,
             None
@@ -118,7 +123,7 @@ class GaussianRasterizer(nn.Module):
         self.M = M
         self.speed = speed
 
-    def forward(self, query_points, means5D, shs, opacities, scales, rotations, sh_degree):
+    def forward(self, query_points, means5D, shs, opacities, scales, rotations, sh_degree, phase_grad_scale=1.0):
 
         # Invoke C++/CUDA rasterizing routine
         if query_points.dim() == 2:
@@ -135,7 +140,8 @@ class GaussianRasterizer(nn.Module):
                     self.T, self.M,
                     sh_degree,
                     self.speed,
-                    self.config
+                    self.config,
+                    phase_grad_scale
                 )
                 stfts.append(stft)
                 radiis.append(radii)
@@ -151,7 +157,8 @@ class GaussianRasterizer(nn.Module):
             self.T, self.M,
             sh_degree,
             self.speed,
-            self.config
+            self.config,
+            phase_grad_scale
         )
 
 

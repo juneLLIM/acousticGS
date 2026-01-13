@@ -89,7 +89,7 @@ class GaussianModel(nn.Module):
         self.rasterizer = GaussianRasterizer(
             config, T, M, self.normalize_speed(self.config.rendering.speed))
 
-    def forward(self, position_rx, network_view=None, position_tx=None):
+    def forward(self, position_rx, network_view=None, position_tx=None, phase_grad_scale=1.0):
         query_points = self.normalize_points(position_rx)
 
         stft, radii = self.rasterizer(
@@ -99,7 +99,8 @@ class GaussianModel(nn.Module):
             self.get_opacity,
             self.get_scaling,
             self._rotation,
-            self.active_sh_degree
+            self.active_sh_degree,
+            phase_grad_scale
         )
 
         self.visibility = (radii > 0).any(dim=0)

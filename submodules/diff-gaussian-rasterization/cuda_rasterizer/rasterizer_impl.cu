@@ -468,6 +468,7 @@ void CudaRasterizer::Rasterizer::backward(
 	float speed,
 	float cull_distance,
 	float sh_clamping_threshold,
+	float phase_grad_scale,
 	bool debug) {
 	GeometryState geomState = GeometryState::fromChunk(geom_buffer, P);
 	BinningState binningState = BinningState::fromChunk(binning_buffer, R);
@@ -505,7 +506,8 @@ void CudaRasterizer::Rasterizer::backward(
 		(float4*)dL_dconic,
 		dL_dopacity,
 		dL_dphasor,
-		dL_ddistance), debug)
+		dL_ddistance,
+		phase_grad_scale), debug)
 
 
 #define PREPROCESS(V, RotationModel) \

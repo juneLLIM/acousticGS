@@ -40,7 +40,8 @@ namespace BACKWARD
 		float4* dL_dconic2D,
 		float* dL_dopacity,
 		float* dL_dphasor,
-		float* dL_ddistance);
+		float* dL_ddistance,
+		const float phase_grad_scale);
 
 	template <int V, typename RotationModel>
 	void preprocess(

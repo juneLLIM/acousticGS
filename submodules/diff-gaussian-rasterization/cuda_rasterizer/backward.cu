@@ -528,7 +528,8 @@ PerGaussianRenderCUDA(
 	float4* __restrict__ dL_dconic2D,
 	float* __restrict__ dL_dopacity,
 	float* __restrict__ dL_dphasor,
-	float* __restrict__ dL_ddistance
+	float* __restrict__ dL_ddistance,
+	const float phase_grad_scale
 ) {
 	// global_bucket_idx = warp_idx
 	auto block = cg::this_thread_block();
@@ -793,7 +794,8 @@ void BACKWARD::render(
 	float4* dL_dconic2D,
 	float* dL_dopacity,
 	float* dL_dphasor,
-	float* dL_ddistance) {
+	float* dL_ddistance,
+	const float phase_grad_scale) {
 	const int THREADS = 32;
 	PerGaussianRenderCUDA<NUM_CHANNELS> << <((B * 32) + THREADS - 1) / THREADS, THREADS >> > (
 		ranges,
@@ -814,6 +816,7 @@ void BACKWARD::render(
 		dL_dconic2D,
 		dL_dopacity,
 		dL_dphasor,
-		dL_ddistance
+		dL_ddistance,
+		phase_grad_scale
 		);
 }

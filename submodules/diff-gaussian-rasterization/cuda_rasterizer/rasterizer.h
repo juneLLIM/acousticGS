@@ -72,6 +72,7 @@ namespace CudaRasterizer
 			float speed,
 			float cull_distance,
 			float sh_clamping_threshold,
+			float phase_grad_scale,
 			bool debug);
 	};
 };
