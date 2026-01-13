@@ -146,7 +146,9 @@ __global__ void duplicateWithKeys(
 
 				uint64_t key = y * grid.x + x;
 				key <<= 32;
-				key |= *((uint32_t*)&distances[idx]);
+				float alpha = min(0.99f, co.w * exp(-max_opac_factor));
+				float sort_val = 1.0f - alpha;
+				key |= *((uint32_t*)&sort_val);
 				if(max_opac_factor <= opacity_factor_threshold) {
 					gaussian_keys_unsorted[off] = key;
 					gaussian_values_unsorted[off] = idx;
@@ -158,8 +160,8 @@ __global__ void duplicateWithKeys(
 		for(; off < offset_to; ++off) {
 			uint64_t key = (uint32_t)-1;
 			key <<= 32;
-			const float distance = FLT_MAX;
-			key |= *((uint32_t*)&distance);
+			const float sort_val = 1.0f;
+			key |= *((uint32_t*)&sort_val);
 			gaussian_values_unsorted[off] = static_cast<uint32_t>(-1);
 			gaussian_keys_unsorted[off] = key;
 		}

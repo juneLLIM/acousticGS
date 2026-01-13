@@ -41,7 +41,7 @@ rendering:
   coord_min: -6
   coord_max:  6
   speed: 343.8
-  cull_distance: 1
+  cull_distance: 2
   sh_clamping_threshold: 0 # Non-positive value means no clamping
   antialiasing: 0.05 # Non-positive value means no antialiasing
 
