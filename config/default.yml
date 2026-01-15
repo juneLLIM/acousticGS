@@ -19,9 +19,9 @@ logging:
   viz: True # Enable visualization
   save: True # Enable model checkpoint saving
   log_freq: 10
-  test_freq: 100
-  viz_freq: 1000
-  save_freq: 5000
+  test_freq: 500
+  viz_freq: 2500
+  save_freq: 50000
 
 # Training Settings
 training:
@@ -79,8 +79,8 @@ densification:
   densify_until_iter: 15000
   densification_interval: 100
   opacity_reset_interval: 3000
-  min_grad: 0.0002
   min_opacity: 0.005
   min_scale: 0.0001
   max_scale: 0.1
+  threshold_grad: 0.0002
   threshold_scale: 0.001

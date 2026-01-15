@@ -348,7 +348,7 @@ class GaussianModel(nn.Module):
         features = torch.zeros(
             (count, (self.max_sh_degree + 1) ** 2), device=self.device, dtype=torch.complex64)
 
-        features[:, 0] = stft
+        features[:, 0] = stft * 100
 
         # Fix format
         mean = (mean * self.spatial_ratio).repeat_interleave(count_sqrt, dim=0)
@@ -561,7 +561,7 @@ class GaussianModel(nn.Module):
         padded_grad = torch.zeros((n_init_points), device=self.device)
         padded_grad[:grads.shape[0]] = grads.squeeze()
         selected_pts_mask = torch.where(
-            padded_grad >= self.config.densification.min_grad, True, False)
+            padded_grad >= self.config.densification.threshold_grad, True, False)
         selected_pts_mask = torch.logical_and(selected_pts_mask, torch.max(
             self.get_scaling, dim=1).values > self.config.densification.threshold_scale)
 
@@ -599,7 +599,7 @@ class GaussianModel(nn.Module):
     def densify_and_clone(self, grads):
         # Extract points that satisfy the gradient condition
         selected_pts_mask = torch.where(torch.norm(
-            grads, dim=-1) >= self.config.densification.min_grad, True, False)
+            grads, dim=-1) >= self.config.densification.threshold_grad, True, False)
         selected_pts_mask = torch.logical_and(selected_pts_mask, torch.max(
             self.get_scaling, dim=1).values <= self.config.densification.threshold_scale)
 
