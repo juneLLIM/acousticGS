@@ -21,7 +21,7 @@ from datasets import WaveDataset
 from utils.criterion import Criterion
 from utils.metric import metric_cal
 from utils.config import load_config
-from utils.visualize import visualize_all, visualize_geometry
+from utils.visualize import visualize_all, visualize_geometry, visualize_gt
 from utils.general_utils import safe_state, now_str, save_audio
 
 
@@ -86,32 +86,31 @@ def training(config):
         loss_dict, gt_freq, pred_freq = criterion(
             pred_time, gt_time.to(device))
 
-        visualize_geometry(
-            train_rx=train_dataset.positions_rx,
-            train_tx=train_dataset.positions_tx,
-            test_rx=test_dataset.positions_rx,
-            test_tx=test_dataset.positions_tx,
-            save_path=os.path.join(output_dir, "geometry.png"),
+        visualize_gt(
+            mode_set="test",
+            train_dataset=train_dataset,
+            test_dataset=test_dataset,
+            save_dir=vis_dir,
+            sr=config.audio.fs,
+            coord_min=config.rendering.coord_min,
+            coord_max=config.rendering.coord_max,
+            n_fft=config.audio.n_fft,
+            hop_length=config.audio.hop_length,
         )
         visualize_all(
+            mode_set="test",
             pred_freq=pred_freq[0, :],
             gt_freq=gt_freq[0, :],
             pred_time=pred_time[0, :],
             gt_time=gt_time[0, :],
             position_rx=position_rx[0, :],
             position_tx=position_tx[0, :],
-            mode_set="test",
             save_dir=vis_dir,
             iteration=0,
             gaussians=gaussians,
             sr=config.audio.fs,
             coord_min=config.rendering.coord_min,
             coord_max=config.rendering.coord_max,
-        )
-        save_audio(
-            waveform=gt_time[0, :],
-            sr=config.audio.fs,
-            save_path=os.path.join(vis_dir, f"audio_gt.wav")
         )
 
     print(f"-----------------------------------------------")
@@ -216,13 +215,13 @@ def training(config):
 
                 # Call plotting function
                 visualize_all(
+                    mode_set="test",
                     pred_freq=pred_freq[0, :],
                     gt_freq=gt_freq[0, :],
                     pred_time=pred_time[0, :],
                     gt_time=gt_time[0, :],
                     position_rx=position_rx[0, :],
                     position_tx=position_tx[0, :],
-                    mode_set="test",
                     save_dir=vis_dir,
                     iteration=iteration,
                     gaussians=gaussians,

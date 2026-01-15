@@ -1,23 +1,84 @@
+from cProfile import label
 import os
 import gc
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+import matplotlib.colors as colors
 import matplotlib.animation as animation
 from mpl_toolkits.mplot3d.art3d import Line3DCollection
 from utils.general_utils import save_audio, build_rotation
 
 
-def visualize_all(pred_freq, gt_freq, pred_time, gt_time, position_rx, position_tx, mode_set, save_dir, iteration, gaussians, sr, coord_min, coord_max):
+def visualize_gt(mode_set, train_dataset, test_dataset, save_dir, sr, coord_min, coord_max, n_fft=2048, hop_length=512):
+    """Visualize and save various aspects of the acoustic scene for target receiver including sound fields, Gaussian distributions.
+    """
+
+    gt_time, position_rx, position_tx = test_dataset[0]
+
+    # 0. Geometry
+    if train_dataset is not None and test_dataset is not None:
+        visualize_geometry(
+            train_rx=train_dataset.positions_rx,
+            train_tx=train_dataset.positions_tx,
+            test_rx=test_dataset.positions_rx,
+            test_tx=test_dataset.positions_tx,
+            save_path=os.path.join(os.path.dirname(save_dir), "geometry.png"),
+        )
+
+    # 1. GT Sound Field Video (Time Domain)
+    visualize_gt_sound_field_video(
+        mode_set=mode_set,
+        dataset=test_dataset,
+        coord_min=coord_min,
+        coord_max=coord_max,
+        sr=sr,
+        save_path=os.path.join(save_dir, f"field_gt.gif")
+    )
+
+    # 2. GT Spatial Video
+    visualize_gt_spatial_video(
+        mode_set=mode_set,
+        dataset=test_dataset,
+        coord_min=coord_min,
+        coord_max=coord_max,
+        sr=sr,
+        n_fft=n_fft,
+        hop_length=hop_length,
+        save_path=os.path.join(save_dir, f"g_spatial_gt.gif"),
+    )
+
+    # 3. GT STFT Path Distribution
+    visualize_gt_stft_path(
+        mode_set=mode_set,
+        gt_time=gt_time,
+        position_rx=position_rx,
+        position_tx=position_tx,
+        sr=sr,
+        n_fft=n_fft,
+        hop_length=hop_length,
+        save_path=os.path.join(save_dir, f"g_stft_gt.png"),
+    )
+
+    # 4. GT Audio
+    save_audio(
+        waveform=gt_time,
+        sr=sr,
+        save_path=os.path.join(save_dir, f"audio_gt.wav")
+    )
+
+
+def visualize_all(mode_set, pred_freq, gt_freq, pred_time, gt_time, position_rx, position_tx, save_dir, iteration, gaussians, sr, coord_min, coord_max):
     """Visualize and save various aspects of the acoustic scene for target receiver including signals, sound fields, Gaussian distributions, and audio waveforms.
     """
     # 1. Signal Plots (Time & Frequency Domain)
     visualize_signal(
+        mode_set=mode_set,
         pred_freq=pred_freq,
         gt_freq=gt_freq,
         pred_time=pred_time,
         gt_time=gt_time,
-        mode_set=mode_set,
         save_path=os.path.join(save_dir, f"signal_iter_{iteration}.png")
     )
 
@@ -78,18 +139,260 @@ def to_numpy(tensor):
     return tensor
 
 
-def plot_source(ax, rx, tx):
-    rx = to_numpy(rx)
-    tx = to_numpy(tx)
-    ax.scatter(rx[0], rx[1], rx[2],
-               c="#303030", marker='.', label='Receiver (Microphone)', zorder=1000, depthshade=False, s=150)
-    ax.scatter(tx[0], tx[1], tx[2],
-               c="#303030", marker='*', label='Transmitter (Speaker)', zorder=1000, depthshade=False, s=150)
+def plot_source(ax, rx=None, tx=None):
+    if rx is not None:
+        rx = to_numpy(rx)
+        ax.scatter(rx[0], rx[1], rx[2],
+                   c="#303030", marker='.', label='Receiver (Microphone)', zorder=1000, depthshade=False, s=150)
+    if tx is not None:
+        tx = to_numpy(tx)
+        ax.scatter(tx[0], tx[1], tx[2],
+                   c="#303030", marker='*', label='Transmitter (Speaker)', zorder=1000, depthshade=False, s=150)
 
 
 # -----------------------------------------------------------------------------
 # Visualization Functions
 # -----------------------------------------------------------------------------
+
+def visualize_gt_sound_field_video(mode_set, dataset, coord_min, coord_max, sr, save_path):
+    """Visualize and save the GT sound field video in 3D space (all points from given dataset).
+    Modified from https://github.com/sh01k/MeshRIR/blob/main/irutilities.py
+    """
+
+    # Extract all data
+    waves = to_numpy(dataset.wave_chunks)
+    positions_rx = to_numpy(dataset.positions_rx)
+    positions_tx = to_numpy(dataset.positions_tx)
+    position_tx = positions_tx[0]
+
+    # Time settings
+    n_frames = 50
+    seq_len = waves.shape[1]
+    dt = max(1, seq_len // n_frames)
+    seq_idxs = list(range(0, seq_len, dt))
+    n_frames = len(seq_idxs)
+
+    # Draw plots
+    fig = plt.figure(figsize=(12, 10))
+    ax = fig.add_subplot(111, projection='3d')
+    ax.set_xlim(coord_min*1.5, coord_max*1.5)
+    ax.set_ylim(coord_min*1.5, coord_max*1.5)
+    ax.set_zlim(coord_min*1.5, coord_max*1.5)
+    ax.set_xlabel('x (m)')
+    ax.set_ylabel('y (m)')
+    ax.set_zlabel('z (m)')
+    plot_source(ax, tx=position_tx)
+    ax.legend()
+
+    # Sound pressure colorbar
+    vmin, vmax = -0.1, 0.1
+    norm = colors.Normalize(vmin=vmin, vmax=vmax)
+    sm = cm.ScalarMappable(cmap='RdBu', norm=norm)
+    sm.set_array([])
+    fig.colorbar(sm, ax=ax, label='Sound Pressure', shrink=0.8, pad=0.1)
+
+    # Update function for animation
+    scatter = None
+
+    def update(frame):
+        nonlocal scatter
+
+        # Calculate actual time
+        seq_idx = seq_idxs[frame]
+        current_time = seq_idx / sr
+
+        # Remove previous scatter plot if it exists
+        if scatter is not None:
+            scatter.remove()
+            scatter = None
+
+        # Filter by magnitude for visualization clarity
+        data = waves[:, seq_idx]
+        mask = np.abs(data) > vmax * 0.15
+        if np.sum(mask) > 0:
+            scatter = ax.scatter(positions_rx[mask, 0], positions_rx[mask, 1], positions_rx[mask, 2],
+                                 c=data[mask], cmap='RdBu', alpha=0.5, s=1, marker='s', vmin=vmin, vmax=vmax)
+
+        ax.set_title(
+            f'GT ({mode_set} set) 3D Sound Field (Time: {current_time:.3f}s)')
+
+        return []
+
+    # Save animation
+    anim = animation.FuncAnimation(fig, update, frames=n_frames)
+    anim.save(save_path, writer='pillow', fps=10)
+    cleanup()
+
+
+def visualize_gt_spatial_video(mode_set, dataset, coord_min, coord_max, sr, save_path, n_fft=2048, hop_length=512, f_band=[125, 250, 500, 1000, 2000, 4000]):
+    """Visualize and save the GT spatial video for each frequency band (all points from given dataset).
+    """
+
+    # Extract all data
+    waves = dataset.wave_chunks
+    positions_rx = to_numpy(dataset.positions_rx)
+    positions_tx = to_numpy(dataset.positions_tx)
+    position_tx = positions_tx[0]
+
+    window = torch.hann_window(n_fft).to(waves.device)
+    stft = torch.stft(waves, n_fft=n_fft,
+                      hop_length=hop_length, return_complex=True, window=window)
+    mag = torch.abs(stft)  # (N, F, T)
+
+    # Time settings
+    n_frames = 50
+    seq_len = waves.shape[1]
+    t_len = mag.shape[2]
+    dt = max(1, t_len // n_frames)
+    t_idxs = list(range(0, t_len, dt))
+    n_frames = len(t_idxs)
+    total_time = seq_len / sr
+
+    # Frequency settings
+    freqs = torch.linspace(0, sr/2, mag.shape[1])
+    f_idxs = []
+    for f in f_band:
+        idx = torch.argmin(torch.abs(freqs - f))
+        f_idxs.append(idx.item())
+
+    # Draw subplots for each frequency band
+    n_bands = len(f_band)
+    n_cols = (n_bands + 1) // 2
+    n_rows = 2
+
+    fig = plt.figure(figsize=(5 * n_cols, 5 * n_rows))
+    fig.subplots_adjust(right=0.80)
+
+    axes = []
+    for i, freq in enumerate(f_band):
+        ax = fig.add_subplot(n_rows, n_cols, i + 1, projection='3d')
+        ax.set_xlim(coord_min, coord_max)
+        ax.set_ylim(coord_min, coord_max)
+        ax.set_zlim(coord_min, coord_max)
+        ax.set_xlabel("x (m)")
+        ax.set_ylabel("y (m)")
+        ax.set_zlabel("z (m)")
+        ax.set_title(f"{freq} Hz")
+        plot_source(ax, tx=position_tx)
+        axes.append(ax)
+    handles, labels = axes[-1].get_legend_handles_labels()
+    fig.legend(handles, labels, loc='upper right',
+               bbox_to_anchor=(0.8, 0.95), fontsize='medium')
+
+    # STFT magnitude colorbar
+    vmin, vmax = 0, 2
+    cbar_ax = fig.add_axes([0.85, 0.15, 0.01, 0.7])
+    sm = plt.cm.ScalarMappable(
+        cmap='Reds', norm=plt.Normalize(vmin=vmin, vmax=vmax))
+    sm.set_array([])
+    fig.colorbar(sm, cax=cbar_ax, shrink=0.8, label='Magnitude')
+
+    # Update function for animation
+    scatters = [None] * n_bands
+
+    def update(frame):
+
+        # Calculate actual time
+        t_idx = t_idxs[frame]
+        current_time = t_idx / t_len * total_time
+
+        for i, (ax, f_idx) in enumerate(zip(axes, f_idxs)):
+
+            # Remove previous scatter plot if it exists
+            if scatters[i] is not None:
+                scatters[i].remove()
+                scatters[i] = None
+
+            # Filter by magnitude for visualization clarity
+            data = mag[:, f_idx, t_idx].cpu().numpy()
+            mask = np.abs(data) > vmax * 0.1
+            if np.sum(mask) > 0:
+                scatters[i] = ax.scatter(positions_rx[mask, 0], positions_rx[mask, 1], positions_rx[mask, 2],
+                                         c=data[mask], cmap='Reds', alpha=0.5, s=0.01, marker='s', vmin=vmin, vmax=vmax)
+
+        fig.suptitle(
+            f"GT ({mode_set} set) Spatial Distribution (Time: {current_time:.3f}s)")
+
+        return []
+
+    # Save animation
+    anim = animation.FuncAnimation(fig, update, frames=n_frames)
+    anim.save(save_path, writer='pillow', fps=10)
+    cleanup()
+
+
+def visualize_gt_stft_path(mode_set, gt_time, position_rx, position_tx, sr, save_path, n_fft=2048, hop_length=512):
+    """Visualize and save the GT STFT distribution in Path-Time-Frequency space.
+       Impulse response at Tx plane (Path=0), given GT received signal STFT at Rx plane (Path=dist).
+    """
+
+    # Extract all data
+    seq_len = gt_time.shape[0]
+    total_time = seq_len / sr
+
+    # Compute STFT for Rx signal (gt_time)
+    signal_rx = torch.tensor(to_numpy(gt_time)).float()
+    win_length = n_fft
+    window = torch.hann_window(win_length)
+
+    stft_rx = torch.stft(signal_rx, n_fft=n_fft, hop_length=hop_length,
+                         win_length=win_length, window=window, return_complex=True)
+    mag_rx = torch.abs(stft_rx)  # (Freq, Time)
+
+    # Compute STFT for Tx signal (impulse)
+    signal_tx = torch.zeros_like(signal_rx)
+    signal_tx[0] = 1.0  # Approximating impulse at index 0.
+
+    stft_tx = torch.stft(signal_tx, n_fft=n_fft, hop_length=hop_length,
+                         win_length=win_length, window=window, return_complex=True)
+    mag_tx = torch.abs(stft_tx)  # (Freq, Time)
+
+    # Define grid
+    freqs = np.linspace(0, sr / 2, mag_rx.shape[0])
+    times = np.linspace(0, total_time, mag_rx.shape[1])
+    T_grid, F_grid = np.meshgrid(times, freqs)
+
+    # Draw plots
+    fig = plt.figure(figsize=(12, 10))
+    ax = fig.add_subplot(111, projection='3d')
+    ax.set_xlim(-5, 9)
+    ax.set_ylim(0, total_time)
+    ax.set_zlim(0, sr/2)
+    ax.set_xlabel('Path (Tx -> Rx) [m]')
+    ax.set_ylabel('Time [s]')
+    ax.set_zlabel('Frequency [Hz]')
+    ax.set_title(
+        f'GT ({mode_set} set) STFT Distribution (Path-Time-Frequency)')
+    fig.subplots_adjust(left=0, right=0.8, top=0.9, bottom=0.1)
+
+    # STFT magnitude colorbar
+    vmin, vmax = 0, 2
+    cbar_ax = fig.add_axes([0.85, 0.15, 0.01, 0.7])
+    sm = plt.cm.ScalarMappable(
+        cmap='Reds', norm=plt.Normalize(vmin=vmin, vmax=vmax))
+    sm.set_array([])
+    fig.colorbar(sm, cax=cbar_ax, shrink=0.8, label='STFT Magnitude')
+
+    # Draw Rx plane at path = dist_tx_rx
+    dist_tx_rx = np.linalg.norm(to_numpy(position_rx) - to_numpy(position_tx))
+    P_rx = np.full_like(T_grid, dist_tx_rx)
+    ax.plot_surface(P_rx, T_grid, F_grid, facecolors=sm.to_rgba(
+        mag_rx.cpu().numpy()), shade=False)
+
+    # Draw Tx plane at Path = 0
+    P_tx = np.full_like(T_grid, 0)
+    ax.plot_surface(P_tx, T_grid, F_grid, facecolors=sm.to_rgba(
+        mag_tx.cpu().numpy()), shade=False)
+
+    # Mark Tx and Rx plane on the path axis
+    ax.plot([0, 0], [0, total_time], [0, 0], 'k--', label='Tx Plane')
+    ax.plot([dist_tx_rx, dist_tx_rx], [0, total_time],
+            [0, 0], 'r--', label='Rx Plane')
+    ax.legend()
+
+    # Save the figure
+    plt.savefig(save_path, dpi=300)
+    cleanup()
 
 
 def visualize_geometry(train_rx, train_tx, test_rx, test_tx, save_path):
@@ -97,6 +400,7 @@ def visualize_geometry(train_rx, train_tx, test_rx, test_tx, save_path):
     Modified from https://github.com/sh01k/MeshRIR/blob/main/irutilities.py
     """
 
+    # Extract all data
     train_rx = to_numpy(train_rx)
     train_tx = to_numpy(train_tx)
     test_rx = to_numpy(test_rx)
@@ -129,16 +433,18 @@ def visualize_geometry(train_rx, train_tx, test_rx, test_tx, save_path):
     z_range = all_data[:, 2].max() - all_data[:, 2].min()
     ax.set_box_aspect((x_range, y_range, z_range))
 
+    # Save the figure
     plt.title("Geometry of Receiver and Transmitter Positions")
     plt.savefig(save_path, dpi=300)
     cleanup()
 
 
-def visualize_signal(pred_freq, gt_freq, pred_time, gt_time, mode_set, save_path):
+def visualize_signal(mode_set, pred_freq, gt_freq, pred_time, gt_time, save_path):
     """Visualize and save the predicted and ground truth signals in both time and frequency domains.
     Modified from https://github.com/penn-waves-lab/AVR/blob/main/utils/logger.py
     """
 
+    # Extract all data
     pred_freq = to_numpy(pred_freq)
     gt_freq = to_numpy(gt_freq)
     pred_time = to_numpy(pred_time)
@@ -195,8 +501,6 @@ def visualize_sound_field_video(gaussians, position_rx, position_tx, coord_min, 
     """Visualize and save the sound field video in 3D space (Time domain) using scatter plot.
     Modified from https://github.com/sh01k/MeshRIR/blob/main/irutilities.py
     """
-    import matplotlib.cm as cm
-    import matplotlib.colors as colors
 
     # Get device
     device = gaussians.device
@@ -228,20 +532,9 @@ def visualize_sound_field_video(gaussians, position_rx, position_tx, coord_min, 
     pred_ir = np.concatenate(pred_ir_list, axis=0)
     grid_points = to_numpy(grid_points)
 
-    # Sound pressure range
-    vmin, vmax = -0.1, 0.1
-
     # Draw plots
     fig = plt.figure(figsize=(12, 10))
     ax = fig.add_subplot(111, projection='3d')
-
-    # Add Colorbar
-    norm = colors.Normalize(vmin=vmin, vmax=vmax)
-    sm = cm.ScalarMappable(cmap='RdBu', norm=norm)
-    sm.set_array([])
-    fig.colorbar(sm, ax=ax, label='Sound Pressure', shrink=0.8, pad=0.1)
-
-    # Set static elements once
     ax.set_xlim(coord_min*1.5, coord_max*1.5)
     ax.set_ylim(coord_min*1.5, coord_max*1.5)
     ax.set_zlim(coord_min*1.5, coord_max*1.5)
@@ -251,20 +544,27 @@ def visualize_sound_field_video(gaussians, position_rx, position_tx, coord_min, 
     plot_source(ax, position_rx, position_tx)
     ax.legend()
 
+    # Sound pressure colorbar
+    vmin, vmax = -0.1, 0.1
+    norm = colors.Normalize(vmin=vmin, vmax=vmax)
+    sm = cm.ScalarMappable(cmap='RdBu', norm=norm)
+    sm.set_array([])
+    fig.colorbar(sm, ax=ax, label='Sound Pressure', shrink=0.8, pad=0.1)
+
     # Update function for animation
     scatter = None
 
     def update(frame):
         nonlocal scatter
 
+        # Calculate actual time
+        seq_idx = seq_idxs[frame]
+        current_time = seq_idx / sr
+
         # Remove previous scatter plot if it exists
         if scatter is not None:
             scatter.remove()
             scatter = None
-
-        # Calculate actual time
-        seq_idx = seq_idxs[frame]
-        current_time = seq_idx / sr
 
         # Filter by magnitude for visualization clarity
         data = pred_ir[:, frame]
@@ -273,10 +573,11 @@ def visualize_sound_field_video(gaussians, position_rx, position_tx, coord_min, 
             scatter = ax.scatter(grid_points[mask, 0], grid_points[mask, 1], grid_points[mask, 2],
                                  c=data[mask], cmap='RdBu', alpha=0.5, s=100, marker='s', vmin=vmin, vmax=vmax)
 
-        ax.set_title(f'Sound Field 3D (Time: {current_time:.3f}s)')
+        ax.set_title(f'3D Sound Field (Time: {current_time:.3f}s)')
 
         return []
 
+    # Save animation
     anim = animation.FuncAnimation(fig, update, frames=n_frames)
     anim.save(save_path, writer='pillow', fps=10)
     cleanup()
@@ -325,9 +626,14 @@ def visualize_gaussian_spatial_video(gaussians, position_rx, position_tx, coord_
 
         # Calculate colors based on DC Component Magnitude of Complex SH Feature
         features = to_numpy(torch.abs(features[:, 0]))
-        feat_min, feat_max = 0, 2
 
-    # Setup subplots for each frequency band
+    # Time settings
+    n_frames = 50
+    dt = max(1, t_len // n_frames)
+    t_idxs = list(range(0, t_len, dt))
+    n_frames = len(t_idxs)
+
+    # Draw subplots for each frequency band
     n_bands = len(f_band)
     n_cols = (n_bands + 1) // 2
     n_rows = 2
@@ -335,23 +641,7 @@ def visualize_gaussian_spatial_video(gaussians, position_rx, position_tx, coord_
     fig = plt.figure(figsize=(5 * n_cols, 5 * n_rows))
     fig.subplots_adjust(right=0.80)
 
-    # Feature Magnitude Colorbar
-    cbar_ax_feat = fig.add_axes([0.85, 0.15, 0.01, 0.7])
-    sm_feat = plt.cm.ScalarMappable(
-        cmap='coolwarm', norm=plt.Normalize(vmin=feat_min, vmax=feat_max))
-    sm_feat.set_array([])
-    fig.colorbar(sm_feat, cax=cbar_ax_feat, shrink=0.8,
-                 label='Feature Magnitude')
-
-    # Opacity Colorbar
-    cbar_ax_op = fig.add_axes([0.92, 0.15, 0.01, 0.7])
-    sm_op = plt.cm.ScalarMappable(
-        cmap='gray_r', norm=plt.Normalize(vmin=0, vmax=1))
-    sm_op.set_array([])
-    fig.colorbar(sm_op, cax=cbar_ax_op, shrink=0.8, label='Opacity')
-
     axes = []
-
     for i, freq in enumerate(f_band):
         ax = fig.add_subplot(n_rows, n_cols, i + 1, projection='3d')
         ax.set_xlim(coord_min, coord_max)
@@ -363,12 +653,26 @@ def visualize_gaussian_spatial_video(gaussians, position_rx, position_tx, coord_
         ax.set_title(f"{freq} Hz")
         plot_source(ax, position_rx, position_tx)
         axes.append(ax)
+    handles, labels = axes[-1].get_legend_handles_labels()
+    fig.legend(handles, labels, loc='upper right',
+               bbox_to_anchor=(0.8, 0.95), fontsize='medium')
 
-    # Time settings
-    n_frames = 50
-    dt = max(1, t_len // n_frames)
-    t_idxs = list(range(0, t_len, dt))
-    n_frames = len(t_idxs)
+    # Feature magnitude colorbar
+    vmin_feat, vmax_feat = 0, 2
+    cbar_ax_feat = fig.add_axes([0.85, 0.15, 0.01, 0.7])
+    sm_feat = plt.cm.ScalarMappable(
+        cmap='Reds', norm=plt.Normalize(vmin=vmin_feat, vmax=vmax_feat))
+    sm_feat.set_array([])
+    fig.colorbar(sm_feat, cax=cbar_ax_feat, shrink=0.8,
+                 label='Feature Magnitude')
+
+    # Opacity colorbar
+    vmin_op, vmax_op = 0, 1
+    cbar_ax_op = fig.add_axes([0.92, 0.15, 0.01, 0.7])
+    sm_op = plt.cm.ScalarMappable(
+        cmap='gray_r', norm=plt.Normalize(vmin=vmin_op, vmax=vmax_op))
+    sm_op.set_array([])
+    fig.colorbar(sm_op, cax=cbar_ax_op, shrink=0.8, label='Opacity')
 
     # Sphere for ellipsoid construction
     u = torch.linspace(0, 2 * np.pi, 8, device=device)
@@ -382,10 +686,9 @@ def visualize_gaussian_spatial_video(gaussians, position_rx, position_tx, coord_
     lines_dict = {freq: [] for freq in f_band}
 
     def update(frame):
+
         # Calculate actual time
         current_time = t_idxs[frame] / t_len * total_time
-        fig.suptitle(
-            f"Gaussian Spatial Distribution (Time: {current_time:.3f}s)")
 
         # Remove previous lines
         for freq in f_band:
@@ -481,19 +784,23 @@ def visualize_gaussian_spatial_video(gaussians, position_rx, position_tx, coord_
                     ax.add_collection(lc)
                     lines_dict[freq].append(lc)
 
+        fig.suptitle(
+            f"Gaussian Spatial Distribution (Time: {current_time:.3f}s)")
+
         return []
 
+    # Save animation
     anim = animation.FuncAnimation(fig, update, frames=n_frames)
     anim.save(save_path, writer='pillow', fps=10)
     cleanup()
 
 
 def visualize_gaussian_stft_path(gaussians, position_rx, position_tx, sr, save_path):
-    """Visualize and save the STFT(tf)-path(xyz) distribution of Gaussians.
+    """Visualize and save the STFT distribution of Gaussians in Path-Time-Frequency space.
     """
-    device = gaussians.device
 
     # Extract parameters
+    device = gaussians.device
     with torch.no_grad():
         XYZ = gaussians.get_xyz
         T = gaussians.get_t
@@ -502,11 +809,10 @@ def visualize_gaussian_stft_path(gaussians, position_rx, position_tx, sr, save_p
         O = gaussians.get_opacity
         R = build_rotation(gaussians._rotation[:, :4]).to(device)
         features = gaussians.get_features
-
-        # Denormalize
         seq_len = gaussians.seq_len
         total_time = seq_len / sr
 
+        # Denormalize xyztf
         XYZ = gaussians.denormalize_points(XYZ)
         T = (T + 1) / 2 * total_time
         F = (F + 1) / 2 * (sr / 2)
@@ -535,7 +841,6 @@ def visualize_gaussian_stft_path(gaussians, position_rx, position_tx, sr, save_p
 
         # Calculate colors based on DC Component Magnitude of Complex SH Feature
         features = to_numpy(torch.abs(features[:, 0]))
-        feat_min, feat_max = 0, 2
 
         # Vector from tx to rx
         rx_t = position_rx.to(device)
@@ -558,37 +863,63 @@ def visualize_gaussian_stft_path(gaussians, position_rx, position_tx, sr, save_p
         r_p = to_numpy(r_p).flatten()
         S_t = to_numpy(S_t).flatten()
         S_f = to_numpy(S_f).flatten()
-
         tx = to_numpy(position_tx)
         dist_tx_rx = float(to_numpy(dist_tx_rx))
 
-    # Calculate Path Projection Center
+    # Calculate path projection center
     vec_tx_g = XYZ - tx
     unit_vec_np = to_numpy(unit_vec)
     path_proj = np.dot(vec_tx_g, unit_vec_np)
 
-    # Plot
+    # Draw plots
     fig = plt.figure(figsize=(12, 10))
     ax = fig.add_subplot(111, projection='3d')
+    ax.set_xlim(-5, 9)
+    ax.set_ylim(0, total_time)
+    ax.set_zlim(0, sr/2)
+    ax.set_xlabel('Path (Tx -> Rx) [m]')
+    ax.set_ylabel('Time [s]')
+    ax.set_zlabel('Frequency [Hz]')
+    ax.set_title(
+        'Gaussian STFT Distribution (Path-Time-Frequency)')
+    fig.subplots_adjust(left=0, right=0.8, top=0.9, bottom=0.1)
+
+    # Mark Tx and Rx plane on the path axis
+    ax.plot([0, 0], [0, total_time], [0, 0], 'k--', label='Tx Plane')
+    ax.plot([dist_tx_rx, dist_tx_rx], [0, total_time],
+            [0, 0], 'r--', label='Rx Plane')
+    ax.legend()
+
+    # Feature magnitude colorbar
+    vmin_feat, vmax_feat = 0, 2
+    cbar_ax_feat = fig.add_axes([0.85, 0.15, 0.01, 0.7])
+    sm_feat = plt.cm.ScalarMappable(
+        cmap='Reds', norm=plt.Normalize(vmin=vmin_feat, vmax=vmax_feat))
+    sm_feat.set_array([])
+    fig.colorbar(sm_feat, cax=cbar_ax_feat, shrink=0.8,
+                 label='Feature Magnitude')
+
+    # Opacity colorbar
+    vmin_op, vmax_op = 0, 1
+    cbar_ax_op = fig.add_axes([0.92, 0.15, 0.01, 0.7])
+    sm_op = plt.cm.ScalarMappable(
+        cmap='gray_r', norm=plt.Normalize(vmin=vmin_op, vmax=vmax_op))
+    sm_op.set_array([])
+    fig.colorbar(sm_op, cax=cbar_ax_op, shrink=0.8, label='Opacity')
+
+    # Sphere for ellipsoid construction
+    n_grid = 8
+    u = np.linspace(0, 2 * np.pi, n_grid)
+    v = np.linspace(0, np.pi, n_grid)
+    x_sphere = np.outer(np.cos(u), np.sin(v))
+    y_sphere = np.outer(np.sin(u), np.sin(v))
+    z_sphere = np.outer(np.ones_like(u), np.cos(v))
+    sphere_points = np.stack(
+        [x_sphere.flatten(), y_sphere.flatten(), z_sphere.flatten()])
 
     # Filter low opacity for clarity
     mask = O > 0.01
     idxs = np.where(mask)[0]
-
-    # Create RGBA colors based on feature magnitude and opacity
-    norm = plt.Normalize(vmin=0, vmax=2)
-    cmap = plt.cm.coolwarm
-
-    # Sphere for ellipsoid construction (8x8 grid)
-    u = np.linspace(0, 2 * np.pi, 8)
-    v = np.linspace(0, np.pi, 8)
-    x_sphere = np.outer(np.cos(u), np.sin(v))
-    y_sphere = np.outer(np.sin(u), np.sin(v))
-    z_sphere = np.outer(np.ones_like(u), np.cos(v))
-    # Flatten for easier manipulation: (3, 64)
-    sphere_points = np.stack(
-        [x_sphere.flatten(), y_sphere.flatten(), z_sphere.flatten()])
-    n_grid = 8
 
     if len(idxs) > 0:
         chunk_size = 5000
@@ -630,7 +961,7 @@ def visualize_gaussian_stft_path(gaussians, position_rx, position_tx, sr, save_p
             c_vals = features[chunk_idxs]
             o_vals = O[chunk_idxs]
 
-            rgba = cmap(norm(c_vals))
+            rgba = sm_feat.to_rgba(c_vals)
             rgba[:, 3] = np.clip(o_vals, 0, 1)
 
             # Repeat colors for segments
@@ -646,40 +977,6 @@ def visualize_gaussian_stft_path(gaussians, position_rx, position_tx, sr, save_p
             lc = Line3DCollection(
                 final_segments, colors=final_colors, linewidth=0.1)
             ax.add_collection(lc)
-
-    # Mark Tx and Rx positions on the Path axis
-    ax.plot([0, 0], [0, total_time], [0, 0], 'k--', label='Tx Plane')
-    ax.plot([dist_tx_rx, dist_tx_rx], [0, total_time],
-            [0, 0], 'r--', label='Rx Plane')
-
-    ax.set_xlabel('Path (Tx -> Rx) [m]')
-    ax.set_ylabel('Time [s]')
-    ax.set_zlabel('Frequency [Hz]')
-    ax.set_title(
-        'Gaussian Tx -> Rx Path-Time-Frequency Distribution')
-
-    # Set limits
-    ax.set_xlim(path_proj.min(), path_proj.max())
-    ax.set_ylim(0, total_time)
-    ax.set_zlim(0, sr/2)
-
-    # Feature Magnitude Colorbar
-    cbar_ax_feat = fig.add_axes([0.85, 0.15, 0.01, 0.7])
-    sm_feat = plt.cm.ScalarMappable(
-        cmap='coolwarm', norm=plt.Normalize(vmin=feat_min, vmax=feat_max))
-    sm_feat.set_array([])
-    fig.colorbar(sm_feat, cax=cbar_ax_feat, shrink=0.8,
-                 label='Feature Magnitude')
-
-    # Opacity Colorbar
-    cbar_ax_op = fig.add_axes([0.92, 0.15, 0.01, 0.7])
-    sm_op = plt.cm.ScalarMappable(
-        cmap='gray_r', norm=plt.Normalize(vmin=0, vmax=1))
-    sm_op.set_array([])
-    fig.colorbar(sm_op, cax=cbar_ax_op, shrink=0.8, label='Opacity')
-
-    ax.legend()
-    fig.subplots_adjust(left=0, right=0.8, top=0.9, bottom=0.1)
 
     # Save the figure
     plt.savefig(save_path, dpi=300)
